@@ -1,0 +1,36 @@
+# ServicePolicyTask配置文件
+
+# 远程推理服务配置
+policy:
+  host: "127.0.0.1"
+  port: 8999
+  timeout: 10.0
+  retry_count: 3
+
+# 任务执行配置  
+task:
+  prompt: "请执行任务"
+  step_interval: 1.0  # 执行频率，单位秒
+  max_steps: 0  # 最大执行步数，0表示无限制
+
+# 环境配置（可选，会与Policy要求的配置合并）
+environment:
+  dataloader:
+    data_source: 
+        ALIGNED_ROBOT:
+          enabled: true
+    enabled_streams:
+      camera:
+        head: true
+        hand_left: true
+        hand_right: true
+        head_depth: false
+        hand_left_depth: false
+        hand_right_depth: false
+  
+  motion_controller:
+    enabled: true
+
+# 日志配置
+logging:
+  level: INFO  #[INFO, DEBUG]

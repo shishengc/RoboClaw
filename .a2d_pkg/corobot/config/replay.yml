@@ -1,0 +1,30 @@
+replay:
+  h5_file_path: "/root/app/1257958.h5" # h5 file path
+  action_chunk_size: 30 # action chunk size
+  action_shift: 30 # action shift between chunks
+  action_source: "action" #[state or action]
+
+dataloader:
+  data_source:
+    ALIGNED_ROBOT:
+      enabled: true
+  enabled_streams: # if any stream is true, STD_MODEL_INPUT will have the stream
+    camera:  
+      head: true
+      hand_left: true
+      hand_right: true
+      head_depth: false 
+      hand_left_depth: false
+      hand_right_depth: false
+      head_center_fisheye: false
+      hand_left_fisheye: false
+      hand_right_fisheye: false
+      head_left_fisheye: false
+      head_right_fisheye: false
+      back_left_fisheye: false
+      back_right_fisheye: false
+
+# 运动控制器配置
+motion_controller:
+  enabled: true  # if false will not execute action
+  execution_timeout_s: 2.0 # if timeout, will return error

@@ -1,0 +1,42 @@
+# Genie WebSocket Server Configuration File
+
+# Communication Configuration
+communication:
+  host: 0.0.0.0  # env server ip
+  port: 8766  # env server port
+  max_clients: 2  # max clients, here is 1
+  compression: # It is recommended not to modify it
+    enabled: true
+    method: msgpack  
+    level: 1
+
+dataloader:
+  data_source:
+    ALIGNED_ROBOT:
+      enabled: true
+      image_decode: false
+  enabled_streams: # if any stream is true, STD_MODEL_INPUT will have the stream
+    camera:  
+      head: true
+      hand_left: true
+      hand_right: true
+      head_depth: false 
+      hand_left_depth: false
+      hand_right_depth: false
+      head_center_fisheye: false
+      hand_left_fisheye: false
+      hand_right_fisheye: false
+      head_left_fisheye: false
+      head_right_fisheye: false
+      back_left_fisheye: false
+      back_right_fisheye: false
+
+
+# 运动控制器配置
+motion_controller:
+  enabled: true  # if false will not execute action
+  execution_timeout_s: 2.0 # if timeout, will return error
+
+# 日志配置
+logging:
+  level: DEBUG  #[INFO, DEBUG]

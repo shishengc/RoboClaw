@@ -1,0 +1,12 @@
+# CoRobot应用配置文件
+
+# Flask应用配置
+app:
+  host: "0.0.0.0" # app server ip, for gui process to connect
+  port: 8765 # app server port, for gui process to connect
+
+# 默认加载的PolicyTask
+default_policytask:
+  policy_module: "corobot.policy_tasks.service_policy_task" # installed policy module
+  class_name: "ServicePolicyTask"
+  config_path: "~/.cache/agibot/corobot/service_policytask_config.yml"

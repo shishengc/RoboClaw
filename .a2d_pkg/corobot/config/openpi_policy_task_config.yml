@@ -1,0 +1,37 @@
+# Genie WebSocket Server Configuration File
+
+# Communication Configuration
+policy:
+  host: 172.19.26.138  # policy server ip
+  port: 8000 # policy server port
+
+
+environment:  
+  dataloader:
+    data_source:
+      ALIGNED_ROBOT:
+        enabled: true
+    enabled_streams: # if any stream is true, STD_MODEL_INPUT will have the stream
+      camera:  
+        head: true
+        hand_left: true
+        hand_right: true
+        head_depth: false 
+        hand_left_depth: false
+        hand_right_depth: false
+        head_center_fisheye: false
+        hand_left_fisheye: false
+        hand_right_fisheye: false
+        head_left_fisheye: false
+        head_right_fisheye: false
+        back_left_fisheye: false
+        back_right_fisheye: false
+
+  # 运动控制器配置
+  motion_controller:
+    enabled: true  # if false will not execute action
+    execution_timeout_s: 2.0 # if timeout, will return error
+
+# 日志配置
+logging:
+  level: DEBUG  #[INFO, DEBUG]

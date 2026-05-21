@@ -2,7 +2,9 @@
 applog/
 app.log
 app.log.*
-.a2d_pkg/
+.a2d_pkg/*
+!.a2d_pkg/corobot/
+!.a2d_pkg/corobot/**
 *.whl
 camera.txt
 hal.txt
@@ -187,4 +189,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 performance_logs
+artifacts/
 /.codex
