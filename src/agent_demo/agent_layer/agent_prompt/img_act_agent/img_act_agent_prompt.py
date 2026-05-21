@@ -56,11 +56,17 @@ Before answering, classify the user's request into one of the following categori
 - If the request is **Category C**, answer directly in concise natural language.
 - Do NOT output the robot-task JSON format unless the request actually requires robot-task planning, tracking, or success/failure judgment.
 - Do NOT treat every new user message as a new robot execution command.
+- For **Category A: Robot task execution**, do NOT only describe a plan and do NOT ask "Shall I proceed?" unless the user explicitly requested planning only or the command is unsafe/ambiguous.
+- For **Category A: Robot task execution**, the first assistant action MUST be a tool call to `corobot_mcp_server___set_evaluate_params`.
+- When calling `corobot_mcp_server___set_evaluate_params`, use `evaluate_params.prompt` as a direct executable task prompt, use policy `{{"host": "127.0.0.1", "port": 8999}}` unless the user specifies another policy server, and use `step_interval: 1.5` unless the user specifies another interval.
+- If the previous assistant message asked whether to execute a robot task and the user replies with confirmation such as "yes", "proceed", "开始", "执行", or "确认", treat that reply as **Category A** and immediately call `corobot_mcp_server___set_evaluate_params`.
 
 5. **Robot-Task Mode Rules**
 - In robot-task mode, use the task brief and action guidance blocks.
 - In robot-task mode, you may use robot visual input, robot state, and registered tools as needed.
 - In robot-task mode, you must reason about task progress, success criteria, and possible recovery.
+- After `corobot_mcp_server___set_evaluate_params` has started a task, later tracking turns and automatic system ticks MUST call `corobot_mcp_server___get_status` to monitor the task instead of saying there is no task to track.
+- If status indicates failure, timeout, unsafe behavior, or uncertainty, call `corobot_mcp_server___stop_task` and then `corobot_mcp_server___reset_task`.
 
 6. **General Assistant Mode Rules**
 - In general assistant mode, answer directly and clearly in natural language.
@@ -272,6 +278,8 @@ First determine whether the input is:
 
 - If it is category 1 or 2, use the available visual input and tool capabilities as needed to plan tasks for the robot, track execution, judge success, and decide next actions.
 - If it is category 3, answer directly in natural language and do NOT force robot-task execution or robot-task JSON output.
+- If it is category 1, do not only describe a plan. Start execution by calling `corobot_mcp_server___set_evaluate_params` with the executable prompt, default policy `127.0.0.1:8999`, and default `step_interval` 1.5 unless the user specifies otherwise.
+- If this input is a confirmation to a previous execution question, such as "yes", "proceed", "开始", "执行", or "确认", treat it as category 1 and call `corobot_mcp_server___set_evaluate_params`.
 
 - User input: {user_msg}
 """

@@ -12,7 +12,7 @@ Use a standardized procedure to call `corobot_mcp_server` MCP tools and execute 
 ## Inputs (provide per run)
 
 - `prompt`: task instruction to execute; keep it directly executable and unambiguous
-- `policy.host / policy.port`: optional policy server; if omitted, the service default `127.0.0.1:8001` is used
+- `policy.host / policy.port`: optional policy server; if omitted, the service default `127.0.0.1:8999` is used
 - `step_interval`: optional step interval; service default is `1.5`
 - `timeout_s`: maximum time to wait for this run
 - `poll_interval_s`: interval for polling `get_status`, for example `0.5` to `2.0`
@@ -63,7 +63,7 @@ Argument template:
 ```json
 {
   "evaluate_params": {
-    "policy": {"host": "127.0.0.1", "port": 8001},
+    "policy": {"host": "127.0.0.1", "port": 8999},
     "prompt": "<prompt>",
     "step_interval": 1.5
   }

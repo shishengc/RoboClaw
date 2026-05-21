@@ -31,7 +31,7 @@ This service wraps the local CoRobot PolicyTask HTTP API, default `http://localh
 ```json
 {
   "evaluate_params": {
-    "policy": {"host": "127.0.0.1", "port": 8001},
+    "policy": {"host": "127.0.0.1", "port": 8999},
     "prompt": "Put the primer into the drawer labeled PRIMER and close it.",
     "step_interval": 1.5
   }

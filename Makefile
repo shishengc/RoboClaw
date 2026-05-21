@@ -1,7 +1,20 @@
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 LOCAL_PKG_DIR ?= $(MAKEFILE_DIR)/.a2d_pkg
-COROBOT_WHL ?=
-COROBOT_SITE_PACKAGES ?=
+COROBOT_WHL ?= ~/corobot-1.0.0.dev0+gui.mh.2-py3-none-any.whl
+COROBOT_SITE_PACKAGES ?= /home/ck/miniconda3/envs/robot/lib/python3.10/site-packages
+COROBOT_PYTHON ?= /home/ck/miniconda3/envs/robot/bin/python
+CAMERA_ARGS ?=
+INFER_POLICY_ARGS ?=
+DRYRUN_POLICY_ARGS ?=
+DEBUG_POLICY_STEP_ARGS ?=
+DEBUG_POLICY_RECEDING_CONTINUOUS_ARGS ?=
+DEBUG_POLICY_RECEDING_CONTINUOUS_REVERSE_ARGS ?=
+EXECUTE_ACTION_CHUNK_ARGS ?=
+COROBOT_APP_ARGS ?=
+ROBOCLAW_AGENT_TRACE ?= 0
+ROBOCLAW_AGENT_TRACE_DIR ?= artifacts/agent_traces
+ROBOCLAW_AGENT_TRACE_FILE ?=
+ROBOCLAW_AGENT_TRACE_MAX_STRING ?= 4000
 ROOT_PYTHON ?= 3.10
 MCP_PYTHON ?= 3.12
 BASIC_MEMORY_DIR := $(MAKEFILE_DIR)/src/mcp_server_demo/basic-memory
@@ -10,11 +23,19 @@ COROBOT_MCP_DIR := $(MAKEFILE_DIR)/src/mcp_server_demo/corobot_mcp_server
 DATA_ANALYST_MCP_DIR := $(MAKEFILE_DIR)/src/mcp_server_demo/data_analyst_mcp_server
 
 # 默认仅注入 src；本地扩展目录存在时自动加入；可选追加授权用户的 site-packages
-PYTHONPATH_VALUE := $(MAKEFILE_DIR)/src$(if $(wildcard $(LOCAL_PKG_DIR)),:$(LOCAL_PKG_DIR),)$(if $(COROBOT_SITE_PACKAGES),:$(COROBOT_SITE_PACKAGES),)
+COROBOT_ENV_LIB := $(if $(COROBOT_SITE_PACKAGES),$(patsubst %/lib/python$(ROOT_PYTHON)/site-packages,%/lib,$(COROBOT_SITE_PACKAGES)),)
+LOCAL_CMEEL_SITE_PACKAGES := $(LOCAL_PKG_DIR)/cmeel.prefix/lib/python$(ROOT_PYTHON)/site-packages
+COROBOT_CMEEL_SITE_PACKAGES := $(if $(COROBOT_SITE_PACKAGES),$(COROBOT_SITE_PACKAGES)/cmeel.prefix/lib/python$(ROOT_PYTHON)/site-packages,)
+LOCAL_CMEEL_LIB := $(LOCAL_PKG_DIR)/cmeel.prefix/lib
+COROBOT_CMEEL_LIB := $(if $(COROBOT_SITE_PACKAGES),$(COROBOT_SITE_PACKAGES)/cmeel.prefix/lib,)
+PYTHONPATH_VALUE := $(MAKEFILE_DIR)/src$(if $(wildcard $(LOCAL_PKG_DIR)),:$(LOCAL_PKG_DIR),)$(if $(wildcard $(LOCAL_CMEEL_SITE_PACKAGES)),:$(LOCAL_CMEEL_SITE_PACKAGES),)$(if $(COROBOT_SITE_PACKAGES),:$(COROBOT_SITE_PACKAGES),)$(if $(wildcard $(COROBOT_CMEEL_SITE_PACKAGES)),:$(COROBOT_CMEEL_SITE_PACKAGES),)
 PYENV := PYTHONPATH=$(PYTHONPATH_VALUE)
-LD_LIBRARY := LD_LIBRARY_PATH=/data/opencv45:$LD_LIBRARY_PATH
+LD_LIBRARY_VALUE := $(if $(wildcard $(COROBOT_ENV_LIB)),$(COROBOT_ENV_LIB):,)/data/opencv45$(if $(wildcard $(LOCAL_CMEEL_LIB)),:$(LOCAL_CMEEL_LIB),)$(if $(wildcard $(COROBOT_CMEEL_LIB)),:$(COROBOT_CMEEL_LIB),):$$LD_LIBRARY_PATH
+LD_LIBRARY := LD_LIBRARY_PATH=$(LD_LIBRARY_VALUE)
+AGENT_TRACE_ENV := ROBOCLAW_AGENT_TRACE=$(ROBOCLAW_AGENT_TRACE) ROBOCLAW_AGENT_TRACE_DIR=$(ROBOCLAW_AGENT_TRACE_DIR) ROBOCLAW_AGENT_TRACE_FILE=$(ROBOCLAW_AGENT_TRACE_FILE) ROBOCLAW_AGENT_TRACE_MAX_STRING=$(ROBOCLAW_AGENT_TRACE_MAX_STRING)
 CURRENT_TIME := $(shell date +"%Y-%m-%d_%H-%M")
 UV_RUN_ROOT := uv run --python $(ROOT_PYTHON)
+UV_RUN_COROBOT := uv run --python $(COROBOT_PYTHON)
 
 
 init:
@@ -42,13 +63,19 @@ run:
 	$(MAKE) run_tui
 
 run_a2d:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}src/agent_demo/interaction_layer/cmd/olympus_img_cmd.py
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}src/agent_demo/interaction_layer/cmd/olympus_img_cmd.py
 
 run_gui:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}src/agent_demo/interaction_layer/gradio_ui/gradio_ui.py
 
 run_tui:
-	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}src/agent_demo/interaction_layer/tui/olympus_tui.py
+	$(AGENT_TRACE_ENV) $(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}src/agent_demo/interaction_layer/tui/olympus_tui.py
+
+run_tui_trace:
+	$(MAKE) run_tui ROBOCLAW_AGENT_TRACE=1
+
+run_corobot_app:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python -m corobot.app.app $(COROBOT_APP_ARGS)
 
 test_img:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/agent_layer/llm_manager/openai_client/test_img.py
@@ -57,10 +84,28 @@ test_mm:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/agent_layer/memory_manager/test_memory_manager.py
 
 test_a2d:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/machine_layer/test_dataloader_a2d.py
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}tests/agent_demo/machine_layer/test_dataloader_a2d.py
+
+test_camera:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_corobot_camera.py $(CAMERA_ARGS)
+
+test_infer_policy:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_infer_policy.py $(INFER_POLICY_ARGS) $(DRYRUN_POLICY_ARGS)
+
+debug_policy_step:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_step.py $(DEBUG_POLICY_STEP_ARGS)
+
+debug_policy_receding_continuous:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_receding_continuous.py $(DEBUG_POLICY_RECEDING_CONTINUOUS_ARGS)
+
+debug_policy_receding_continuous_reverse:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_receding_continuous_reverse.py $(DEBUG_POLICY_RECEDING_CONTINUOUS_REVERSE_ARGS)
+
+execute_action_chunk:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/execute_corobot_action_chunk.py $(EXECUTE_ACTION_CHUNK_ARGS)
 
 test_udp:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/interaction_layer/test_udp.py
 
 test_a2d_img:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/agent_layer/test_img_agent.py
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}tests/agent_demo/agent_layer/test_img_agent.py

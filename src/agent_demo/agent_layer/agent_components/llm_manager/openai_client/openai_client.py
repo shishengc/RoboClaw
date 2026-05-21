@@ -3,6 +3,8 @@ import asyncio
 import logging
 import os
 import time
+import uuid
+from pathlib import Path
 from agent_demo.types.interaction_types import InteractionPackage
 from typing import Any, AsyncGenerator, Awaitable, Callable
 from ..chat_api_native.base_chat_api import BaseChatAPI, llmState
@@ -25,6 +27,10 @@ import json
 import httpx
 
 logger = logging.getLogger(__name__)
+
+TRACE_DEFAULT_DIR = "artifacts/agent_traces"
+TRACE_DEFAULT_MAX_STRING = 4000
+TRACE_RUN_ID = time.strftime("%Y%m%d_%H%M%S") + f"_{os.getpid()}"
 
 
 class OpenAIClient(BaseChatAPI):
@@ -69,6 +75,83 @@ class OpenAIClient(BaseChatAPI):
     @property
     def _uses_responses_api(self) -> bool:
         return self._wire_api in {"responses", "response"}
+
+    def _trace_enabled(self) -> bool:
+        value = os.getenv("ROBOCLAW_AGENT_TRACE", "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _trace_max_string(self) -> int:
+        raw_value = os.getenv("ROBOCLAW_AGENT_TRACE_MAX_STRING", str(TRACE_DEFAULT_MAX_STRING)).strip()
+        try:
+            return max(0, int(raw_value))
+        except ValueError:
+            return TRACE_DEFAULT_MAX_STRING
+
+    def _trace_dir(self) -> Path:
+        raw_dir = os.getenv("ROBOCLAW_AGENT_TRACE_DIR", TRACE_DEFAULT_DIR).strip() or TRACE_DEFAULT_DIR
+        return Path(raw_dir).expanduser()
+
+    def _trace_file_path(self) -> Path:
+        raw_file = os.getenv("ROBOCLAW_AGENT_TRACE_FILE", "").strip()
+        if raw_file:
+            trace_file = Path(raw_file).expanduser()
+            if trace_file.is_absolute():
+                return trace_file
+            return self._trace_dir() / trace_file
+        return self._trace_dir() / f"llm_api_{TRACE_RUN_ID}.jsonl"
+
+    def _trace_json_safe(self, value: Any, max_string: int) -> Any:
+        if isinstance(value, dict):
+            return {str(k): self._trace_json_safe(v, max_string) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._trace_json_safe(item, max_string) for item in value]
+        if isinstance(value, tuple):
+            return [self._trace_json_safe(item, max_string) for item in value]
+        if isinstance(value, str):
+            if max_string and len(value) > max_string:
+                return {
+                    "__truncated__": True,
+                    "length": len(value),
+                    "preview": value[:max_string],
+                }
+            return value
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        if hasattr(value, "model_dump"):
+            try:
+                return self._trace_json_safe(value.model_dump(), max_string)
+            except Exception:
+                pass
+        if hasattr(value, "to_dict"):
+            try:
+                return self._trace_json_safe(value.to_dict(), max_string)
+            except Exception:
+                pass
+        return repr(value)
+
+    def _trace_api_event(self, trace_id: str, event: str, payload: dict[str, Any]) -> None:
+        if not self._trace_enabled():
+            return
+
+        try:
+            trace_file = self._trace_file_path()
+            trace_file.parent.mkdir(parents=True, exist_ok=True)
+            max_string = self._trace_max_string()
+            record = {
+                "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "run_id": TRACE_RUN_ID,
+                "trace_id": trace_id,
+                "event": event,
+                "client_name": getattr(self._agent_card_ref.config, "client_name", ""),
+                "model": getattr(self._agent_card_ref.config, "model", ""),
+                "wire_api": self._wire_api,
+                **payload,
+            }
+            with trace_file.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(self._trace_json_safe(record, max_string), ensure_ascii=False))
+                handle.write("\n")
+        except Exception as exc:
+            logger.warning("[OpenAIClient] Failed to write agent trace: %s", exc)
 
     # ========== 优雅退出 ==========
     async def shutdown(self) -> None:
@@ -178,15 +261,40 @@ class OpenAIClient(BaseChatAPI):
                 )
             return await self._chat_with_responses_api(self._build_responses_request(send_package))
 
-        response = await self._client.chat.completions.create(
-            model=self._agent_card_ref.config.model,
-            n=self._agent_card_ref.config.choices_n,
-            temperature=self._agent_card_ref.config.temperature,
-            reasoning_effort=self._agent_card_ref.config.reasoning_effort,
-            max_completion_tokens=self._agent_card_ref.config.max_completion_tokens,
-            messages=send_package.contexts,
-            tools=send_package.tools_list,
-            stream=False,  # sync_chat 用非流式
+        request_args = {
+            "model": self._agent_card_ref.config.model,
+            "n": self._agent_card_ref.config.choices_n,
+            "temperature": self._agent_card_ref.config.temperature,
+            "max_completion_tokens": self._agent_card_ref.config.max_completion_tokens,
+            "messages": send_package.contexts,
+            "tools": send_package.tools_list,
+            "stream": False,
+        }
+        model = self._agent_card_ref.config.model.lower()
+        if model.startswith("o") or model.startswith("gpt-5"):
+            request_args["reasoning_effort"] = self._agent_card_ref.config.reasoning_effort
+        trace_id = uuid.uuid4().hex
+        url = f"{self._agent_card_ref.config.base_url.rstrip('/')}/chat/completions"
+        self._trace_api_event(trace_id, "request", {"api": "chat.completions", "url": url, "request": request_args})
+        start = time.monotonic()
+        try:
+            response = await self._client.chat.completions.create(**request_args)
+        except Exception as exc:
+            self._trace_api_event(
+                trace_id,
+                "error",
+                {"api": "chat.completions", "url": url, "elapsed_ms": (time.monotonic() - start) * 1000.0, "error": repr(exc)},
+            )
+            raise
+        self._trace_api_event(
+            trace_id,
+            "response",
+            {
+                "api": "chat.completions",
+                "url": url,
+                "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                "response": response,
+            },
         )
         return response
 
@@ -207,8 +315,10 @@ class OpenAIClient(BaseChatAPI):
             "input": response_input,
             "stream": False,
             "instructions": "\n\n".join(instructions_parts).strip() or "You are a helpful coding assistant.",
-            "reasoning": {"effort": self._agent_card_ref.config.reasoning_effort},
         }
+        model = self._agent_card_ref.config.model.lower()
+        if model.startswith("o") or model.startswith("gpt-5"):
+            request_args["reasoning"] = {"effort": self._agent_card_ref.config.reasoning_effort}
         if send_package.tools_list:
             request_args["tools"] = self._build_responses_tools(send_package.tools_list)
             request_args["parallel_tool_calls"] = True
@@ -218,6 +328,9 @@ class OpenAIClient(BaseChatAPI):
         url = f"{self._agent_card_ref.config.base_url.rstrip('/')}/responses"
         max_attempts = max(1, int(self._agent_card_ref.config.max_retries) + 1)
         response: httpx.Response | None = None
+        trace_id = uuid.uuid4().hex
+        start = time.monotonic()
+        self._trace_api_event(trace_id, "request", {"api": "responses", "url": url, "request": request_args})
 
         async with httpx.AsyncClient(
             timeout=self._agent_card_ref.config.timeout,
@@ -247,6 +360,17 @@ class OpenAIClient(BaseChatAPI):
                             )
                             await asyncio.sleep(backoff_seconds)
                             continue
+                        self._trace_api_event(
+                            trace_id,
+                            "error",
+                            {
+                                "api": "responses",
+                                "url": url,
+                                "status_code": response.status_code,
+                                "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                                "response_text": response.text,
+                            },
+                        )
                         response.raise_for_status()
                     break
                 except httpx.RequestError as exc:
@@ -263,16 +387,63 @@ class OpenAIClient(BaseChatAPI):
                     await asyncio.sleep(backoff_seconds)
 
         if response is None:
+            self._trace_api_event(
+                trace_id,
+                "error",
+                {
+                    "api": "responses",
+                    "url": url,
+                    "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                    "error": "responses API request did not produce a response",
+                },
+            )
             raise RuntimeError("responses API request did not produce a response")
 
         content_type = response.headers.get("content-type", "")
         if "text/event-stream" in content_type:
-            return self._parse_responses_sse(response.text)
+            parsed_response = self._parse_responses_sse(response.text)
+            self._trace_api_event(
+                trace_id,
+                "response",
+                {
+                    "api": "responses",
+                    "url": url,
+                    "status_code": response.status_code,
+                    "content_type": content_type,
+                    "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                    "response": parsed_response,
+                },
+            )
+            return parsed_response
 
         if not response.text.strip():
+            self._trace_api_event(
+                trace_id,
+                "error",
+                {
+                    "api": "responses",
+                    "url": url,
+                    "status_code": response.status_code,
+                    "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                    "error": "responses API returned an empty body",
+                },
+            )
             raise ValueError("responses API returned an empty body")
 
-        return response.json()
+        parsed_response = response.json()
+        self._trace_api_event(
+            trace_id,
+            "response",
+            {
+                "api": "responses",
+                "url": url,
+                "status_code": response.status_code,
+                "content_type": content_type,
+                "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                "response": parsed_response,
+            },
+        )
+        return parsed_response
 
     async def _chat_with_responses_api_stream(
         self,
@@ -282,17 +453,44 @@ class OpenAIClient(BaseChatAPI):
         stream_args = dict(request_args)
         stream_args.pop("stream", None)
         final_response: dict[str, Any] | None = None
+        trace_id = uuid.uuid4().hex
+        url = f"{self._agent_card_ref.config.base_url.rstrip('/')}/responses"
+        start = time.monotonic()
+        self._trace_api_event(trace_id, "request", {"api": "responses.stream", "url": url, "request": stream_args})
 
-        async with self._client.responses.stream(**stream_args) as response_stream:
-            async for event in response_stream:
-                if event.type == "response.output_text.delta" and event.delta:
-                    await on_text_delta(event.delta)
-                elif event.type == "response.completed":
-                    final_response = event.response.to_dict()
+        try:
+            async with self._client.responses.stream(**stream_args) as response_stream:
+                async for event in response_stream:
+                    if event.type == "response.output_text.delta" and event.delta:
+                        await on_text_delta(event.delta)
+                    elif event.type == "response.completed":
+                        final_response = event.response.to_dict()
 
-            if final_response is None:
-                final_response = (await response_stream.get_final_response()).to_dict()
+                if final_response is None:
+                    final_response = (await response_stream.get_final_response()).to_dict()
+        except Exception as exc:
+            self._trace_api_event(
+                trace_id,
+                "error",
+                {
+                    "api": "responses.stream",
+                    "url": url,
+                    "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                    "error": repr(exc),
+                },
+            )
+            raise
 
+        self._trace_api_event(
+            trace_id,
+            "response",
+            {
+                "api": "responses.stream",
+                "url": url,
+                "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                "response": final_response,
+            },
+        )
         return final_response
 
     async def _chat_with_chat_completions_stream(
@@ -300,17 +498,44 @@ class OpenAIClient(BaseChatAPI):
         send_package: OpenAISendMsg,
         on_text_delta: Callable[[str], Awaitable[None]],
     ) -> ChatCompletion:
-        response_stream: AsyncStream[ChatCompletionChunk] = await self._client.chat.completions.create(
-            model=self._agent_card_ref.config.model,
-            n=self._agent_card_ref.config.choices_n,
-            temperature=self._agent_card_ref.config.temperature,
-            reasoning_effort=self._agent_card_ref.config.reasoning_effort,
-            max_completion_tokens=self._agent_card_ref.config.max_completion_tokens,
-            messages=send_package.contexts,
-            tools=send_package.tools_list,
-            stream=True,
-            stream_options={"include_usage": True},
+        request_args = {
+            "model": self._agent_card_ref.config.model,
+            "n": self._agent_card_ref.config.choices_n,
+            "temperature": self._agent_card_ref.config.temperature,
+            "max_completion_tokens": self._agent_card_ref.config.max_completion_tokens,
+            "messages": send_package.contexts,
+            "tools": send_package.tools_list,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        model = self._agent_card_ref.config.model.lower()
+        if model.startswith("o") or model.startswith("gpt-5"):
+            request_args["reasoning_effort"] = self._agent_card_ref.config.reasoning_effort
+
+        trace_id = uuid.uuid4().hex
+        url = f"{self._agent_card_ref.config.base_url.rstrip('/')}/chat/completions"
+        start = time.monotonic()
+        self._trace_api_event(
+            trace_id,
+            "request",
+            {"api": "chat.completions.stream", "url": url, "request": request_args},
         )
+        try:
+            response_stream: AsyncStream[ChatCompletionChunk] = await self._client.chat.completions.create(
+                **request_args
+            )
+        except Exception as exc:
+            self._trace_api_event(
+                trace_id,
+                "error",
+                {
+                    "api": "chat.completions.stream",
+                    "url": url,
+                    "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                    "error": repr(exc),
+                },
+            )
+            raise
 
         response_id = ""
         response_model = self._agent_card_ref.config.model
@@ -320,53 +545,66 @@ class OpenAIClient(BaseChatAPI):
         usage_payload: dict[str, Any] | None = None
         choices_acc: dict[int, dict[str, Any]] = {}
 
-        async for chunk in response_stream:
-            response_id = chunk.id or response_id
-            response_model = chunk.model or response_model
-            response_created = chunk.created or response_created
-            response_object = chunk.object or response_object
-            system_fingerprint = chunk.system_fingerprint or system_fingerprint
+        try:
+            async for chunk in response_stream:
+                response_id = chunk.id or response_id
+                response_model = chunk.model or response_model
+                response_created = chunk.created or response_created
+                response_object = chunk.object or response_object
+                system_fingerprint = chunk.system_fingerprint or system_fingerprint
 
-            if chunk.usage is not None:
-                usage_payload = chunk.usage.to_dict()
+                if chunk.usage is not None:
+                    usage_payload = chunk.usage.to_dict()
 
-            for choice in chunk.choices:
-                choice_acc = choices_acc.setdefault(
-                    choice.index,
-                    {
-                        "content_parts": [],
-                        "tool_calls": {},
-                        "finish_reason": "stop",
-                    },
-                )
-
-                if choice.finish_reason:
-                    choice_acc["finish_reason"] = choice.finish_reason
-
-                delta = choice.delta
-                if delta.content:
-                    choice_acc["content_parts"].append(delta.content)
-                    await on_text_delta(delta.content)
-
-                for tool_call in delta.tool_calls or []:
-                    tool_index = int(getattr(tool_call, "index", 0) or 0)
-                    tool_acc = choice_acc["tool_calls"].setdefault(
-                        tool_index,
+                for choice in chunk.choices:
+                    choice_acc = choices_acc.setdefault(
+                        choice.index,
                         {
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
+                            "content_parts": [],
+                            "tool_calls": {},
+                            "finish_reason": "stop",
                         },
                     )
-                    if tool_call.id:
-                        tool_acc["id"] = tool_call.id
 
-                    function_delta = getattr(tool_call, "function", None)
-                    if function_delta is not None:
-                        if function_delta.name:
-                            tool_acc["function"]["name"] += function_delta.name
-                        if function_delta.arguments:
-                            tool_acc["function"]["arguments"] += function_delta.arguments
+                    if choice.finish_reason:
+                        choice_acc["finish_reason"] = choice.finish_reason
+
+                    delta = choice.delta
+                    if delta.content:
+                        choice_acc["content_parts"].append(delta.content)
+                        await on_text_delta(delta.content)
+
+                    for tool_call in delta.tool_calls or []:
+                        tool_index = int(getattr(tool_call, "index", 0) or 0)
+                        tool_acc = choice_acc["tool_calls"].setdefault(
+                            tool_index,
+                            {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            },
+                        )
+                        if tool_call.id:
+                            tool_acc["id"] = tool_call.id
+
+                        function_delta = getattr(tool_call, "function", None)
+                        if function_delta is not None:
+                            if function_delta.name:
+                                tool_acc["function"]["name"] += function_delta.name
+                            if function_delta.arguments:
+                                tool_acc["function"]["arguments"] += function_delta.arguments
+        except Exception as exc:
+            self._trace_api_event(
+                trace_id,
+                "error",
+                {
+                    "api": "chat.completions.stream",
+                    "url": url,
+                    "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                    "error": repr(exc),
+                },
+            )
+            raise
 
         response_payload: dict[str, Any] = {
             "id": response_id,
@@ -401,7 +639,18 @@ class OpenAIClient(BaseChatAPI):
                 }
             )
 
-        return ChatCompletion.model_validate(response_payload)
+        response = ChatCompletion.model_validate(response_payload)
+        self._trace_api_event(
+            trace_id,
+            "response",
+            {
+                "api": "chat.completions.stream",
+                "url": url,
+                "elapsed_ms": (time.monotonic() - start) * 1000.0,
+                "response": response,
+            },
+        )
+        return response
 
     @staticmethod
     def _should_retry_responses_status(status_code: int) -> bool:

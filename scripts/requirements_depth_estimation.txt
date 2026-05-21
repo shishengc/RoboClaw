@@ -1,0 +1,32 @@
+# 深度估计和三维坐标计算所需的依赖项
+
+# 核心深度估计库
+depth-anything-v2>=0.1.0
+
+# 计算库
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# 图像处理
+opencv-python>=4.8.0
+
+# 科学计算
+numpy>=1.24.0
+scipy>=1.10.0
+
+# 项目已有的依赖，这里列出关键的
+opencv-python>=4.11.0.86
+loguru>=0.7
+pydantic>=2.5
+
+# 可选：点云处理
+# python-pcl>=0.3
+# open3d>=0.17.0
+
+# 可选：可视化
+matplotlib>=3.7.0
+plotly>=5.0.0
+
+# 可选：数据处理
+pandas>=2.0.0

@@ -17,7 +17,7 @@ corobot_base_url = "http://localhost:8765"
 # 策略服务器默认配置
 # DEFAULT_POLICY_HOST = "10.204.143.220"
 DEFAULT_POLICY_HOST = "127.0.0.1"
-DEFAULT_POLICY_PORT = 8001
+DEFAULT_POLICY_PORT = 8999
 
 # set_evaluate_params 成功后，等待此时间（秒）再自动启动任务，确保参数设置已完全生效
 AUTO_START_DELAY_S = 1.0
@@ -100,7 +100,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="set_evaluate_params",
-            description="每当用户输入新的任务指令时都需要该工具，用于设置CoRobot PolicyTask的任务参数，设置成功后会自动启动任务，决定了机器人执行任务的策略、提示词和步间隔。如果未提供策略服务器配置，将使用默认值（host: 127.0.0.1, port: 8001）",
+            description="每当用户输入新的任务指令时都需要该工具，用于设置CoRobot PolicyTask的任务参数，设置成功后会自动启动任务，决定了机器人执行任务的策略、提示词和步间隔。如果未提供策略服务器配置，将使用默认值（host: 127.0.0.1, port: 8999）",
             inputSchema={
                 "type": "object",
                 "required": ["evaluate_params"],
@@ -121,7 +121,7 @@ async def list_tools() -> list[types.Tool]:
                                     },
                                     "port": {
                                         "type": "integer",
-                                        "description": "策略服务器端口（可选，默认: 8001）",
+                                        "description": "策略服务器端口（可选，默认: 8999）",
                                     },
                                 },
                             },
