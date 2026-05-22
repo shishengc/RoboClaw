@@ -249,7 +249,7 @@ def main() -> int:
     parser.add_argument("--policy-host", default="127.0.0.1", help="Local websocket host, usually the SSH tunnel host.")
     parser.add_argument("--policy-port", type=int, default=8999, help="Local websocket port.")
     parser.add_argument("--prompt", default="The left arm picks up the cylinder on the table")
-    parser.add_argument("--attempts", type=int, default=20, help="Observation fetch attempts.")
+    parser.add_argument("--attempts", type=int, default=10, help="Observation fetch attempts.")
     parser.add_argument("--interval", type=float, default=0.25, help="Seconds between observation fetch attempts.")
     parser.add_argument("--timeout", type=float, default=30.0, help="WebSocket timeout in seconds.")
     parser.add_argument(
@@ -257,13 +257,15 @@ def main() -> int:
         default="artifacts/corobot_policy_receding_continuous_debug",
         help="Directory for continuous receding debug artifacts.",
     )
-    parser.add_argument("--steps-per-chunk", type=int, default=20, help="Number of leading action steps to execute per inference.")
-    parser.add_argument("--step-duration", type=float, default=0.05, help="Trajectory duration for each action step in the chunk.")
+    parser.add_argument("--steps-per-chunk", type=int, default=10, help="Number of leading action steps to execute per inference.")
+    parser.add_argument("--step-duration", type=float, default=0.04, help="Trajectory duration for each action step in the chunk.")
     parser.add_argument("--wait-extra", type=float, default=0.1, help="Extra wait after each continuous chunk execution.")
     parser.add_argument("--max-start-joint-delta", type=float, default=0.15, help="Max allowed current-to-first-row arm delta.")
     parser.add_argument("--max-chunk-step-delta", type=float, default=0.20, help="Max allowed adjacent arm delta inside a chunk.")
     parser.add_argument("--verify-joint-error-deg", type=float, default=8.0, help="Final arm joint error limit.")
-    parser.add_argument("--verify-gripper-error", type=float, default=0.20, help="Final gripper error limit.")
+    parser.add_argument("--verify-gripper-err"                              
+    ""
+    "or", type=float, default=0.20, help="Final gripper error limit.")
     parser.add_argument("--max-chunks", type=int, default=0, help="Maximum inference chunks. Use 0 for unlimited.")
     parser.add_argument("--max-total-steps", type=int, default=0, help="Maximum executed action steps. Use 0 for unlimited.")
     parser.add_argument("--skip-effectors", action="store_true", help="Execute arms only; drop gripper commands.")

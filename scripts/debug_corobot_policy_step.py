@@ -326,7 +326,7 @@ def main() -> int:
     parser.add_argument(
         "--action-source",
         choices=("infer", "json"),
-        default="json",
+        default="infer",
         help="infer=re-run remote policy inference, json=load action from --action-json.",
     )
     parser.add_argument(

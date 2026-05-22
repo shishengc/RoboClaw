@@ -22,6 +22,20 @@ DEFAULT_POLICY_PORT = 8999
 # set_evaluate_params 成功后，等待此时间（秒）再自动启动任务，确保参数设置已完全生效
 AUTO_START_DELAY_S = 1.0
 
+SKILL_TOOL_ENDPOINTS = {
+    "get_skill_status": ("GET", "/skill/status"),
+    "reset_robot": ("POST", "/skill/reset_robot"),
+    "get_eef_pose": ("POST", "/skill/get_eef_pose"),
+    "detect_tags": ("POST", "/skill/detect_tags"),
+    "get_apriltag_pose": ("POST", "/skill/get_tag_pose"),
+    "move_eef": ("POST", "/skill/move_eef"),
+    "lift_eef": ("POST", "/skill/lift_eef"),
+    "place_down": ("POST", "/skill/place_down"),
+    "open_gripper": ("POST", "/skill/gripper"),
+    "close_gripper": ("POST", "/skill/gripper"),
+    "grasp_by_tag": ("POST", "/skill/grasp_by_tag"),
+}
+
 
 @app.call_tool()
 async def fetch_tool(name: str, arguments: dict[str, str]) -> list[types.TextContent]:
@@ -40,6 +54,8 @@ async def fetch_tool(name: str, arguments: dict[str, str]) -> list[types.TextCon
         await get_status(result)
     elif name == "get_prompt":
         await get_prompt(result)
+    elif name in SKILL_TOOL_ENDPOINTS:
+        await call_skill_tool(result, name, arguments)
     else:
         result.append(types.TextContent(type="text", text=f"非法的工具名请求: {name}"))
     return result
@@ -145,6 +161,147 @@ async def list_tools() -> list[types.Tool]:
                 "type": "object",
                 "required": [],
                 "properties": {},
+            },
+        ),
+        *_mcp_control_tools(),
+    ]
+
+
+def _mcp_control_tools() -> list[types.Tool]:
+    return [
+        types.Tool(
+            name="get_skill_status",
+            description="获取 mcp_control_demo deterministic skill API 状态。",
+            inputSchema={"type": "object", "required": [], "properties": {}},
+        ),
+        types.Tool(
+            name="reset_robot",
+            description="按 mcp_control_demo 安全初始位姿复位机器人：先复位夹爪，再复位双臂、头部和腰部。",
+            inputSchema={"type": "object", "required": [], "properties": {}},
+        ),
+        types.Tool(
+            name="get_eef_pose",
+            description="读取指定左/右臂当前 EEF 位姿，返回执行坐标系和相机坐标系下的位置。",
+            inputSchema={
+                "type": "object",
+                "required": ["arm"],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"]},
+                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
+                },
+            },
+        ),
+        types.Tool(
+            name="detect_tags",
+            description="从 CoRobot 当前 observation 刷新 AprilTag 检测缓存。",
+            inputSchema={"type": "object", "required": [], "properties": {}},
+        ),
+        types.Tool(
+            name="get_apriltag_pose",
+            description="按 tag_id 查询相机坐标系下的 AprilTag 位姿。",
+            inputSchema={
+                "type": "object",
+                "required": ["tag_id"],
+                "properties": {
+                    "tag_id": {"type": "integer"},
+                    "allow_stale": {"type": "boolean", "default": False},
+                },
+            },
+        ),
+        types.Tool(
+            name="move_eef",
+            description="以相机坐标系目标点移动指定左/右臂 EEF，控制频率固定 30Hz。",
+            inputSchema={
+                "type": "object",
+                "required": ["arm", "target_position_camera_m"],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"]},
+                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
+                    "target_position_camera_m": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                    },
+                    "target_orientation_camera_xyzw": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                    "duration_s": {"type": "number", "default": 1.0},
+                    "gripper_value": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                },
+            },
+        ),
+        types.Tool(
+            name="lift_eef",
+            description="按配置的 camera_lift_axis 抬升指定 EEF，控制频率固定 30Hz。",
+            inputSchema={
+                "type": "object",
+                "required": ["arm", "distance_m"],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"]},
+                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
+                    "distance_m": {"type": "number"},
+                    "duration_s": {"type": "number", "default": 1.0},
+                },
+            },
+        ),
+        types.Tool(
+            name="place_down",
+            description="按配置的 camera_place_down_axis 下降 EEF，并可在下降后打开夹爪。",
+            inputSchema={
+                "type": "object",
+                "required": ["arm", "down_distance_m"],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"]},
+                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
+                    "down_distance_m": {"type": "number"},
+                    "duration_s": {"type": "number", "default": 1.0},
+                    "open_after_down": {"type": "boolean", "default": True},
+                },
+            },
+        ),
+        types.Tool(
+            name="open_gripper",
+            description="打开指定左/右夹爪，控制频率固定 30Hz。",
+            inputSchema={
+                "type": "object",
+                "required": ["arm"],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"]},
+                    "duration_s": {"type": "number", "default": 0.5},
+                },
+            },
+        ),
+        types.Tool(
+            name="close_gripper",
+            description="关闭指定左/右夹爪，控制频率固定 30Hz。",
+            inputSchema={
+                "type": "object",
+                "required": ["arm"],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"]},
+                    "duration_s": {"type": "number", "default": 0.5},
+                },
+            },
+        ),
+        types.Tool(
+            name="grasp_by_tag",
+            description="根据 tag_id 的相机坐标执行 approach、descend、close、lift 抓取序列。",
+            inputSchema={
+                "type": "object",
+                "required": ["arm", "tag_id"],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"]},
+                    "tag_id": {"type": "integer"},
+                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
+                    "approach_distance_m": {"type": "number", "default": 0.06},
+                    "lift_height_m": {"type": "number", "default": 0.10},
+                    "move_duration_s": {"type": "number", "default": 1.0},
+                    "gripper_duration_s": {"type": "number", "default": 0.5},
+                },
             },
         ),
     ]
@@ -273,6 +430,21 @@ async def get_status(result: list[types.TextContent]):
     except Exception:
         pass
     # #endregion
+
+
+async def call_skill_tool(result: list[types.TextContent], name: str, arguments: dict):
+    """Forward mcp_control_demo primitive tools to the CoRobot skill API."""
+    method, path = SKILL_TOOL_ENDPOINTS[name]
+    payload = dict(arguments or {})
+    if name == "open_gripper":
+        payload["gripper_value"] = 0.0
+    elif name == "close_gripper":
+        payload["gripper_value"] = 1.0
+    if "control_hz" in payload or "control_frequency_hz" in payload:
+        result.append(types.TextContent(type="text", text="错误: 控制频率固定为 30Hz，不能通过工具参数覆盖"))
+        return
+    url = f"{corobot_base_url}{path}"
+    await send_request_to_corobot(result, url, method, payload if method != "GET" else None)
 
 
 # 给CoRobot发HTTP请求

@@ -3,6 +3,7 @@ LOCAL_PKG_DIR ?= $(MAKEFILE_DIR)/.a2d_pkg
 COROBOT_WHL ?= ~/corobot-1.0.0.dev0+gui.mh.2-py3-none-any.whl
 COROBOT_SITE_PACKAGES ?= /home/ck/miniconda3/envs/robot/lib/python3.10/site-packages
 COROBOT_PYTHON ?= /home/ck/miniconda3/envs/robot/bin/python
+APRILTAG_SITE_PACKAGES ?= /home/ck/miniconda3/envs/depth/lib/python3.10/site-packages
 CAMERA_ARGS ?=
 INFER_POLICY_ARGS ?=
 DRYRUN_POLICY_ARGS ?=
@@ -28,7 +29,7 @@ LOCAL_CMEEL_SITE_PACKAGES := $(LOCAL_PKG_DIR)/cmeel.prefix/lib/python$(ROOT_PYTH
 COROBOT_CMEEL_SITE_PACKAGES := $(if $(COROBOT_SITE_PACKAGES),$(COROBOT_SITE_PACKAGES)/cmeel.prefix/lib/python$(ROOT_PYTHON)/site-packages,)
 LOCAL_CMEEL_LIB := $(LOCAL_PKG_DIR)/cmeel.prefix/lib
 COROBOT_CMEEL_LIB := $(if $(COROBOT_SITE_PACKAGES),$(COROBOT_SITE_PACKAGES)/cmeel.prefix/lib,)
-PYTHONPATH_VALUE := $(MAKEFILE_DIR)/src$(if $(wildcard $(LOCAL_PKG_DIR)),:$(LOCAL_PKG_DIR),)$(if $(wildcard $(LOCAL_CMEEL_SITE_PACKAGES)),:$(LOCAL_CMEEL_SITE_PACKAGES),)$(if $(COROBOT_SITE_PACKAGES),:$(COROBOT_SITE_PACKAGES),)$(if $(wildcard $(COROBOT_CMEEL_SITE_PACKAGES)),:$(COROBOT_CMEEL_SITE_PACKAGES),)
+PYTHONPATH_VALUE := $(MAKEFILE_DIR)/src$(if $(wildcard $(LOCAL_PKG_DIR)),:$(LOCAL_PKG_DIR),)$(if $(wildcard $(LOCAL_CMEEL_SITE_PACKAGES)),:$(LOCAL_CMEEL_SITE_PACKAGES),)$(if $(COROBOT_SITE_PACKAGES),:$(COROBOT_SITE_PACKAGES),)$(if $(wildcard $(APRILTAG_SITE_PACKAGES)),:$(APRILTAG_SITE_PACKAGES),)$(if $(wildcard $(COROBOT_CMEEL_SITE_PACKAGES)),:$(COROBOT_CMEEL_SITE_PACKAGES),)
 PYENV := PYTHONPATH=$(PYTHONPATH_VALUE)
 LD_LIBRARY_VALUE := $(if $(wildcard $(COROBOT_ENV_LIB)),$(COROBOT_ENV_LIB):,)/data/opencv45$(if $(wildcard $(LOCAL_CMEEL_LIB)),:$(LOCAL_CMEEL_LIB),)$(if $(wildcard $(COROBOT_CMEEL_LIB)),:$(COROBOT_CMEEL_LIB),):$$LD_LIBRARY_PATH
 LD_LIBRARY := LD_LIBRARY_PATH=$(LD_LIBRARY_VALUE)
@@ -76,6 +77,9 @@ run_tui_trace:
 
 run_corobot_app:
 	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python -m corobot.app.app $(COROBOT_APP_ARGS)
+
+check_corobot_runtime:
+	$(LD_LIBRARY) $(PYENV) $(COROBOT_PYTHON) -c "import sys; print(sys.executable); import cv2; print('cv2', cv2.__file__); from pupil_apriltags import Detector; print('pupil_apriltags ok'); import corobot, a2d_sdk, mcp_control_demo; from corobot.policy_tasks.rule_control_task import RuleControlTask; print('RuleControlTask ok'); print('corobot runtime ok')"
 
 test_img:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/agent_layer/llm_manager/openai_client/test_img.py

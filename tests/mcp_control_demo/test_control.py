@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from corobot.protocol.protocol_schemas import Action
+from mcp_control_demo.calibration import CalibrationConfig
+from mcp_control_demo.control import (
+    CONTROL_HZ,
+    build_grasp_by_tag_sequence,
+    build_gripper_action,
+    build_lift_eef_action,
+    build_move_eef_action,
+)
+from mcp_control_demo.control.timing import make_timing, validate_no_control_hz
+
+
+def _obs():
+    return {
+        "states": {
+            "end_pose": {
+                "base_link": {
+                    "left_arm": {"position": [0.1, 0.2, 0.3], "orientation": [0.0, 0.0, 0.0, 1.0]},
+                    "right_arm": {"position": [0.4, 0.5, 0.6], "orientation": [0.0, 0.0, 0.0, 1.0]},
+                }
+            },
+            "gripper_states": [0.0, 0.0],
+        }
+    }
+
+
+def _assert_action_schema(action: dict):
+    if hasattr(Action, "model_validate"):
+        Action.model_validate(action)
+    else:
+        Action(**action)
+
+
+def test_duration_is_quantized_to_30hz():
+    timing = make_timing(0.034)
+    assert timing.control_hz == CONTROL_HZ
+    assert timing.num_steps == 2
+    assert math.isclose(timing.actual_duration_s, 2.0 / 30.0)
+
+
+def test_move_eef_right_arm_action_is_30hz_and_schema_valid():
+    action, meta = build_move_eef_action(
+        _obs(),
+        CalibrationConfig.identity_for_tests(),
+        arm="right",
+        target_position_camera_m=[0.7, 0.8, 0.9],
+        duration_s=0.05,
+    )
+    _assert_action_schema(action)
+    rows = action["right_arm"]["values"]
+    assert "left_arm" not in action
+    assert len(rows) == 2
+    assert len(rows[-1]) == 6
+    assert math.isclose(action["trajectory_reference_time"], len(rows) / 30.0)
+    assert rows[-1][:3] == pytest.approx([0.7, 0.8, 0.9])
+    assert meta["control_hz"] == 30.0
+    assert meta["num_steps"] == 2
+
+
+def test_camera_target_is_transformed_to_exec_frame():
+    calibration = CalibrationConfig.from_dict(
+        {
+            "T_exec_camera": [
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 2.0],
+                [0.0, 0.0, 1.0, 3.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        }
+    )
+    action, _ = build_move_eef_action(
+        _obs(),
+        calibration,
+        arm="left",
+        target_position_camera_m=[0.1, 0.2, 0.3],
+        duration_s=1.0 / 30.0,
+    )
+    assert action["left_arm"]["values"][-1][:3] == pytest.approx([1.1, 2.2, 3.3])
+
+
+def test_calibration_can_hold_intrinsics_without_transform_for_perception_only():
+    calibration = CalibrationConfig.from_dict(
+        {
+            "intrinsics": {
+                "camera_matrix": {
+                    "data": [
+                        [641.6347338250084, 0.0, 652.2551428790697],
+                        [0.0, 638.6652075681625, 362.8615784851012],
+                        [0.0, 0.0, 1.0],
+                    ]
+                }
+            }
+        }
+    )
+    assert calibration.intrinsics is not None
+    assert calibration.t_exec_camera is None
+    with pytest.raises(ValueError, match="T_exec_camera"):
+        calibration.require_transform()
+
+
+def test_lift_eef_uses_camera_lift_axis():
+    action, meta = build_lift_eef_action(
+        _obs(),
+        CalibrationConfig.identity_for_tests(),
+        arm="right",
+        distance_m=0.1,
+        duration_s=1.0 / 30.0,
+    )
+    assert action["right_arm"]["values"][-1][:3] == pytest.approx([0.4, 0.4, 0.6])
+    assert meta["axis_camera"] == [0.0, -1.0, 0.0]
+
+
+def test_gripper_action_is_30hz_and_sets_both_effector_fields():
+    action, meta = build_gripper_action(_obs(), arm="right", gripper_value=1.0, duration_s=0.5)
+    _assert_action_schema(action)
+    assert len(action["left_effector"]) == 15
+    assert len(action["right_effector"]) == 15
+    assert action["left_effector"][-1] == [0.0]
+    assert action["right_effector"][-1] == [1.0]
+    assert math.isclose(action["trajectory_reference_time"], 15 / 30.0)
+    assert meta["control_hz"] == 30.0
+
+
+def test_grasp_by_tag_sequence_uses_30hz_for_every_segment():
+    actions, meta = build_grasp_by_tag_sequence(
+        _obs(),
+        CalibrationConfig.identity_for_tests(),
+        arm="right",
+        tag_id=3,
+        tag_pose={"tag_id": 3, "position_camera_m": [0.0, 0.0, 0.4]},
+        move_duration_s=0.1,
+        gripper_duration_s=0.1,
+    )
+    assert len(actions) == 5
+    for action in actions:
+        _assert_action_schema(action)
+        assert math.isclose(action["trajectory_reference_time"] * 30.0, round(action["trajectory_reference_time"] * 30.0))
+    assert meta["grasp_point_camera_m"] == [0.0, 0.0, 0.4]
+
+
+def test_control_hz_override_is_rejected():
+    with pytest.raises(ValueError, match="30Hz"):
+        validate_no_control_hz({"control_hz": 60})

@@ -1,0 +1,60 @@
+camera_frame: head_camera_optical
+exec_frame: base_link
+
+# This camera-intrinsics block is copied from:
+# /home/ck/robot_test/calib_output/camera_params_20260520_111317.yaml
+intrinsics:
+  source: /home/ck/robot_test/calib_output/camera_params_20260520_111317.yaml
+  calibration_date: "20260520_111317"
+  pattern:
+    cols: 11
+    rows: 8
+    square_size_m: 0.019
+  image_size:
+    width: 1280
+    height: 720
+  camera_matrix:
+    fx: 641.6347338250084
+    fy: 638.6652075681625
+    cx: 652.2551428790697
+    cy: 362.8615784851012
+    data:
+      - [641.6347338250084, 0.0, 652.2551428790697]
+      - [0.0, 638.6652075681625, 362.8615784851012]
+      - [0.0, 0.0, 1.0]
+  distortion_coefficients:
+    model: rational_model (k1,k2,p1,p2,k3,k4,k5,k6)
+    data:
+      - -17.929117703214654
+      - 117.17887806337045
+      - -0.0015407012431287448
+      - 0.004048177658084983
+      - 211.06897550939644
+      - -17.842155172121206
+      - 115.7751774219727
+      - 220.08512968443634
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+  rms_reprojection_error_px: 0.450888
+  mean_reprojection_error_px: 0.397709
+  num_frames_used: 20
+
+# Required before any real control primitive can execute.
+# Fill this with the calibrated transform that satisfies:
+#   p_exec = T_exec_camera * p_camera
+T_exec_camera:
+  - [1.0, 0.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0, 0.0]
+  - [0.0, 0.0, 1.0, 0.0]
+  - [0.0, 0.0, 0.0, 1.0]
+
+camera_approach_axis: [0.0, 0.0, -1.0]
+camera_lift_axis: [0.0, -1.0, 0.0]
+camera_place_down_axis: [0.0, 1.0, 0.0]
+
+# Fill per-tag grasp offsets after measuring tag placement on each object.
+tag_offsets: {"0": {"grasp_point_tag_m": [0.0, 0.0, 0.0]}}
