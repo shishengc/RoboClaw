@@ -1,55 +1,79 @@
 camera_frame: head_camera_optical
 exec_frame: base_link
 
-# This camera-intrinsics block is copied from:
-# /home/ck/robot_test/calib_output/camera_params_20260520_111317.yaml
+# Head camera intrinsics copied from:
+# /home/ck/robot_test/parameters/head_intrinsic_params.json
 intrinsics:
-  source: /home/ck/robot_test/calib_output/camera_params_20260520_111317.yaml
-  calibration_date: "20260520_111317"
-  pattern:
-    cols: 11
-    rows: 8
-    square_size_m: 0.019
+  source: /home/ck/robot_test/parameters/head_intrinsic_params.json
+  camera_info_source: /home/ck/robot_test/parameters/rs_camera_info.json
+  camera_name: head
+  camera_model: Realsense-D455
   image_size:
     width: 1280
     height: 720
+  fx: 645.2637329101562
+  fy: 644.3807373046875
+  cx: 642.1536865234375
+  cy: 362.27099609375
   camera_matrix:
-    fx: 641.6347338250084
-    fy: 638.6652075681625
-    cx: 652.2551428790697
-    cy: 362.8615784851012
+    fx: 645.2637329101562
+    fy: 644.3807373046875
+    cx: 642.1536865234375
+    cy: 362.27099609375
     data:
-      - [641.6347338250084, 0.0, 652.2551428790697]
-      - [0.0, 638.6652075681625, 362.8615784851012]
+      - [645.2637329101562, 0.0, 642.1536865234375]
+      - [0.0, 644.3807373046875, 362.27099609375]
       - [0.0, 0.0, 1.0]
   distortion_coefficients:
-    model: rational_model (k1,k2,p1,p2,k3,k4,k5,k6)
+    model: plumb bob
+    source_order: head_intrinsic_params.json stores k1,k2,k3,p1,p2
+    opencv_order: k1,k2,p1,p2,k3
     data:
-      - -17.929117703214654
-      - 117.17887806337045
-      - -0.0015407012431287448
-      - 0.004048177658084983
-      - 211.06897550939644
-      - -17.842155172121206
-      - 115.7751774219727
-      - 220.08512968443634
-      - 0.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 0.0
-  rms_reprojection_error_px: 0.450888
-  mean_reprojection_error_px: 0.397709
-  num_frames_used: 20
+      - -0.056559350341558456
+      - 0.0660494938492775
+      - -0.00021873065270483494
+      - 0.0009421679424121976
+      - -0.02106737717986107
 
-# Required before any real control primitive can execute.
-# Fill this with the calibrated transform that satisfies:
+# Head camera fixed extrinsic copied from:
+# /home/ck/robot_test/parameters/head_extrinsic_params.json
+#
+# The source file stores T_head_pitch_camera:
+#   p_head_pitch_link = T_head_pitch_camera * p_camera
+#
+# RuleControlTask currently assumes head/waist stay at the reset pose below while
+# executing camera-frame primitives. Under that fixed-pose assumption:
+#   T_exec_camera = T_base_head_pitch(reset) * T_head_pitch_camera
+#
+# T_base_head_pitch(reset) is computed with CoRobot/Pinocchio FK
+# (corobot.utils.kinematics.Kinematics.compute_head_fk). Do not regenerate this
+# matrix with the hand-written FK from robot_test/head_eye_calibration.py; that
+# path uses a different frame convention and flips the camera depth axis.
+#
+# This means AprilTag camera-frame positions can be converted to base_link by:
+#   p_base_link = T_exec_camera * p_camera
+extrinsics:
+  source: /home/ck/robot_test/parameters/head_extrinsic_params.json
+  source_transform: T_head_pitch_camera
+  source_parent_frame: head_pitch_link
+  source_child_frame: head_camera_optical
+  fixed_robot_pose_for_T_exec_camera:
+    # target_head_positions: [head_yaw_rad, head_pitch_rad]
+    target_head_positions: [0.0, 0.43633230555555524]
+    # target_waist_positions: [waist_pitch_rad, waist_lift_m]
+    target_waist_positions: [0.8901176920412174, 0.4598677062988281]
+  T_head_pitch_camera:
+    - [0.01154905419417851, 0.03633581308553096, -0.9992728996798792, -0.09309730346114839]
+    - [-0.010873071465479051, -0.999275902324378, -0.03646158733116647, 0.03977041211949885]
+    - [-0.9998741899179753, 0.01128626249982923, -0.011145609658446354, -0.01592936593693035]
+    - [0.0, 0.0, 0.0, 1.0]
+
+# Pre-composed transform for fixed reset head/waist pose:
 #   p_exec = T_exec_camera * p_camera
 T_exec_camera:
-  - [1.0, 0.0, 0.0, 0.0]
-  - [0.0, 1.0, 0.0, 0.0]
-  - [0.0, 0.0, 1.0, 0.0]
+  - [-0.013334748, -0.978382107, 0.206374993, 0.613127464]
+  - [-0.999874275, 0.011276128, -0.011148197, -0.015927399]
+  - [0.008580085, -0.206497705, -0.978409464, 1.003947753]
   - [0.0, 0.0, 0.0, 1.0]
 
 camera_approach_axis: [0.0, 0.0, -1.0]

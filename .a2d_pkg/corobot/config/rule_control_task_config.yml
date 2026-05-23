@@ -14,7 +14,17 @@ perception:
 
 reset_on_initialize: true
 reset_pose:
+  # These fixed head/waist reset values must match
+  # src/mcp_control_demo/config/mcp_control_calibration.yaml:
+  #   extrinsics.fixed_robot_pose_for_T_exec_camera
+  #
+  # The configured T_exec_camera is pre-composed for this pose:
+  #   T_base_camera = T_base_head_pitch(reset) * T_head_pitch_camera
   target_grippers_positions: [0.0, 0.0]
+  # [head_yaw_rad, head_pitch_rad]
+  target_head_positions: [0.0, 0.43633230555555524]
+  # [waist_pitch_rad, waist_lift_m]
+  target_waist_positions: [0.8901176920412174, 0.4598677062988281]
 
 environment:
   dataloader:

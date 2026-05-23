@@ -29,8 +29,22 @@ cd /home/ck/RoboClaw
 
 当前重要结论：
 
-- URDF 能算头部 link 相对 `base_link` 的位姿，但当前 `G1.urdf` 没有相机/optical link，不能仅凭 URDF 得到真实相机光心外参。
-- 真正的相机外参仍需要 `T_exec_camera`。当前可用 identity 仅用于小范围链路测试。
+- 最新 head 相机内参来自 `/home/ck/robot_test/parameters/head_intrinsic_params.json`。
+- 最新 head 相机外参来自 `/home/ck/robot_test/parameters/head_extrinsic_params.json`。
+- 这份外参不是直接的 `base_link <- camera`，而是：
+
+```text
+p_head_pitch_link = T_head_pitch_camera * p_camera
+```
+
+- 当前 `mcp_control_calibration.yaml` 已经按固定复位姿态预合成：
+
+```text
+T_exec_camera = T_base_head_pitch(reset) * T_head_pitch_camera
+p_base_link = T_exec_camera * p_camera
+```
+
+- 后续运动测试默认 head 和 waist 保持复位固定状态；如果 head/waist 运动了，当前静态 `T_exec_camera` 就不再准确，需要改成运行时动态 FK 合成。
 
 ## 1. 当前配置链路
 
@@ -66,6 +80,9 @@ perception:
   camera_frame: head_camera_optical
   tag_family: tag25h9
   tag_size_m: 0.0384
+reset_pose:
+  target_head_positions: [0.0, 0.43633230555555524]
+  target_waist_positions: [0.8901176920412174, 0.4598677062988281]
 ```
 
 当前 calibration 文件为：
@@ -74,17 +91,45 @@ perception:
 src/mcp_control_demo/config/mcp_control_calibration.yaml
 ```
 
-用于小步测试时，`T_exec_camera` 可以临时设为 identity：
+当前 calibration 使用 head 相机新内参：
 
 ```yaml
+intrinsics:
+  source: /home/ck/robot_test/parameters/head_intrinsic_params.json
+  camera_name: head
+  camera_model: Realsense-D455
+  image_size:
+    width: 1280
+    height: 720
+  fx: 645.2637329101562
+  fy: 644.3807373046875
+  cx: 642.1536865234375
+  cy: 362.27099609375
+  distortion_coefficients:
+    model: plumb bob
+    opencv_order: k1,k2,p1,p2,k3
+```
+
+当前 calibration 使用固定复位姿态下的 `base_link <- camera` 变换：
+
+```yaml
+extrinsics:
+  source: /home/ck/robot_test/parameters/head_extrinsic_params.json
+  source_transform: T_head_pitch_camera
+  fixed_robot_pose_for_T_exec_camera:
+    # [head_yaw_rad, head_pitch_rad]
+    target_head_positions: [0.0, 0.43633230555555524]
+    # [waist_pitch_rad, waist_lift_m]
+    target_waist_positions: [0.8901176920412174, 0.4598677062988281]
+
 T_exec_camera:
-  - [1.0, 0.0, 0.0, 0.0]
-  - [0.0, 1.0, 0.0, 0.0]
-  - [0.0, 0.0, 1.0, 0.0]
+  - [-0.013334748, -0.978382107, 0.206374993, 0.613127464]
+  - [-0.999874275, 0.011276128, -0.011148197, -0.015927399]
+  - [0.008580085, -0.206497705, -0.978409464, 1.003947753]
   - [0.0, 0.0, 0.0, 1.0]
 ```
 
-注意：identity 只表示 `position_camera_m == position_exec_m`，用于验证链路和小范围移动，不代表真实相机外参。
+注意：这个 `T_exec_camera` 不是 identity，也不是动态外参。它只在 head/waist 保持上述复位姿态时成立。该矩阵使用 CoRobot/Pinocchio FK 合成；不要用 `robot_test/head_eye_calibration.py` 里的手写 FK 重新生成，否则相机深度轴会被翻错。
 
 ## 2. 离线检查
 
@@ -262,6 +307,14 @@ curl -sS -X POST http://localhost:8765/skill/get_tag_pose \
 - `camera_frame`
 - `tag_size_m`
 
+当前 `/skill/get_tag_pose` 返回的 tag 位置仍以 `position_camera_m` 为主；控制层会在 `move_eef`、`lift_eef`、`place_down`、`grasp_by_tag` 构造 action 时使用 `T_exec_camera` 转到 `base_link`。
+
+手动理解转换关系：
+
+```text
+position_base_link_m = T_exec_camera * position_camera_m
+```
+
 如果返回 stale，先重新执行 `detect_tags`。
 
 ## 6. 当前 EEF 位姿读取
@@ -294,7 +347,7 @@ curl -sS -X POST http://localhost:8765/skill/get_eef_pose \
 
 - `position_exec_m` 是当前 EEF 在 `base_link` 下的位置。
 - `position_camera_m` 是通过 `T_exec_camera` 转出的 camera-frame 位置。
-- identity 外参下，`position_camera_m` 会约等于 `position_exec_m`。
+- 当前 `T_exec_camera` 是基于固定 head/waist 复位姿态合成的真实 head 相机外参，因此 `position_camera_m` 和 `position_exec_m` 不会再相等。
 
 如果出现：
 
@@ -314,7 +367,8 @@ camera_pose_error: missing T_exec_camera calibration
 真机测试前确认：
 
 - 有人看护急停。
-- `T_exec_camera` 已配置。若只做链路测试，可以临时 identity。
+- `T_exec_camera` 已配置为最新 head 相机外参合成结果。
+- head/waist 已复位并在测试期间保持固定。
 - 首次移动使用 `0.002m` 到 `0.005m`。
 - `duration_s` 建议设为 `2.0` 或更长。
 
@@ -503,7 +557,7 @@ MCP 调用 `move_eef` 示例：
 控制频率固定为 30Hz，不能通过工具参数覆盖
 ```
 
-## 10. URDF 与相机外参说明
+## 10. URDF、head 外参与静态 base_link 转换
 
 `G1.urdf` 中能看到头部关节链：
 
@@ -521,25 +575,42 @@ base_link
 T_base_head_pitch_link(q)
 ```
 
-但当前 URDF 中没有 `camera`、`rgb`、`depth`、`optical` 等相机 link，所以不能仅凭 URDF 得到：
+但当前 URDF 中没有 `camera`、`rgb`、`depth`、`optical` 等相机 link，所以不能仅凭 URDF 得到相机光心外参。最新固定安装外参由下面文件提供：
 
 ```text
-T_base_head_camera_optical(q)
+/home/ck/robot_test/parameters/head_extrinsic_params.json
 ```
 
-真实外参需要额外提供固定安装关系：
+该文件提供：
 
 ```text
-T_head_pitch_link_camera_optical
+T_head_pitch_camera
+p_head_pitch_link = T_head_pitch_camera * p_camera
 ```
 
-真实运行时应使用：
+`mcp_control` 当前采用静态合成方案。假设 head/waist 在运动期间保持复位姿态：
 
 ```text
-T_base_camera(q) = T_base_head_pitch_link(q) * T_head_pitch_link_camera_optical
+head = [0.0, 0.43633230555555524]
+waist = [0.8901176920412174, 0.4598677062988281]
+T_exec_camera = T_base_head_pitch_link(reset) * T_head_pitch_camera
 ```
 
-当前 identity `T_exec_camera` 只是临时测试方式，不是最终标定方案。
+这里的 `T_base_head_pitch_link(reset)` 必须使用 CoRobot/Pinocchio FK，也就是 `corobot.utils.kinematics.Kinematics.compute_head_fk()` 对应的 frame convention。之前用 `robot_test/head_eye_calibration.py` 的手写 FK 合成时，位置基本接近，但旋转和 CoRobot 实际 frame 不一致，会导致 `base_link -> camera` 后相机 `z` 深度为负。
+
+因此 AprilTag 检测出的相机坐标可以直接转为 `base_link`：
+
+```text
+p_base_link = T_exec_camera * p_camera
+```
+
+如果未来允许 head/waist 在任务过程中移动，需要把这一步改成动态 FK：
+
+```text
+T_exec_camera(q) = T_base_head_pitch_link(q) * T_head_pitch_camera
+```
+
+并且每次构造控制 action 前使用当前 `head_joint_states`、`waist_joint_states` 更新外参。
 
 ## 11. 常见问题
 
@@ -594,12 +665,13 @@ curl -sS http://localhost:8765/skill/status | python3 -m json.tool
 优先检查：
 
 - `T_exec_camera`
+- head/waist 是否保持和 `fixed_robot_pose_for_T_exec_camera` 一致
 - `camera_approach_axis`
 - `camera_lift_axis`
 - `camera_place_down_axis`
 - `tag_offsets`
 
-不要长期用 identity 补偿真实相机外参；identity 只用于小步链路测试。
+不要再用 identity 补偿真实相机外参；当前配置已经使用 head 相机外参合成到 `base_link`。
 
 ### 轨迹步数不是预期值
 
