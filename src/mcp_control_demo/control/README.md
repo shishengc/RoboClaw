@@ -2,6 +2,16 @@
 
 控制层只接受相机坐标系目标，执行前再转换成 CoRobot `Action`。
 
+对外 `move_eef/lift_eef/place_down/grasp_by_tag` 的 EEF 目标统一解释为
+Omnipicker 夹爪中心 TCP，不是 A2D 底层的 wrist/link7 frame。底层 A2D
+controller 仍然只接收 `arm_left_link7/arm_right_link7` 的 `EEF_ABS` 轨迹；
+`mcp_control_demo` 会在下发前减去固定 TCP 偏移：
+
+```text
+gripper_center_offset_link7_m = [0.0, 0.0, 0.14308]
+wrist_target = desired_gripper_center - R_wrist * gripper_center_offset_link7_m
+```
+
 ## 30Hz Rule
 
 所有 primitive 固定：
@@ -31,13 +41,13 @@ actual_duration_s = num_steps / 30
 ```
 
 - `arm`: `left` 或 `right`。
-- `target_position_camera_m`: camera-frame `[x, y, z]`，单位米。
+- `target_position_camera_m`: 夹爪中心 TCP 的 camera-frame `[x, y, z]`，单位米。
 - `target_orientation_camera_xyzw`: 可选，缺省时保留当前 EEF 姿态。
 - `gripper_value`: 可选，`0.0=open`，`1.0=close`。
 
 ## Examples
 
-移动右臂 EEF：
+移动右臂夹爪中心 TCP：
 
 ```json
 {

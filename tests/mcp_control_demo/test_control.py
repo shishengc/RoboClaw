@@ -8,6 +8,7 @@ from corobot.protocol.protocol_schemas import Action
 from mcp_control_demo.calibration import CalibrationConfig
 from mcp_control_demo.control import (
     CONTROL_HZ,
+    GRIPPER_CENTER_OFFSET_LINK7_M,
     build_grasp_by_tag_sequence,
     build_gripper_action,
     build_lift_eef_action,
@@ -58,7 +59,11 @@ def test_move_eef_right_arm_action_is_30hz_and_schema_valid():
     assert len(rows) == 2
     assert len(rows[-1]) == 6
     assert math.isclose(action["trajectory_reference_time"], len(rows) / 30.0)
-    assert rows[-1][:3] == pytest.approx([0.7, 0.8, 0.9])
+    assert rows[-1][:3] == pytest.approx([0.7, 0.8, 0.9 - GRIPPER_CENTER_OFFSET_LINK7_M[2]])
+    assert meta["target_position_exec_m"] == pytest.approx([0.7, 0.8, 0.9])
+    assert meta["target_wrist_position_exec_m"] == pytest.approx(
+        [0.7, 0.8, 0.9 - GRIPPER_CENTER_OFFSET_LINK7_M[2]]
+    )
     assert meta["control_hz"] == 30.0
     assert meta["num_steps"] == 2
 
@@ -81,7 +86,9 @@ def test_camera_target_is_transformed_to_exec_frame():
         target_position_camera_m=[0.1, 0.2, 0.3],
         duration_s=1.0 / 30.0,
     )
-    assert action["left_arm"]["values"][-1][:3] == pytest.approx([1.1, 2.2, 3.3])
+    assert action["left_arm"]["values"][-1][:3] == pytest.approx(
+        [1.1, 2.2, 3.3 - GRIPPER_CENTER_OFFSET_LINK7_M[2]]
+    )
 
 
 def test_calibration_can_hold_intrinsics_without_transform_for_perception_only():

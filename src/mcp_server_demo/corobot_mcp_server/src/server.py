@@ -181,7 +181,7 @@ def _mcp_control_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_eef_pose",
-            description="读取指定左/右臂当前 EEF 位姿，返回执行坐标系和相机坐标系下的位置。",
+            description="读取指定左/右臂当前夹爪中心 TCP 位姿，并返回底层 wrist/link7 位姿。",
             inputSchema={
                 "type": "object",
                 "required": ["arm"],
@@ -210,7 +210,7 @@ def _mcp_control_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="move_eef",
-            description="以相机坐标系目标点移动指定左/右臂 EEF，控制频率固定 30Hz。",
+            description="以相机坐标系夹爪中心 TCP 目标点移动指定左/右臂，底层仍下发 wrist/link7 轨迹，控制频率固定 30Hz。",
             inputSchema={
                 "type": "object",
                 "required": ["arm", "target_position_camera_m"],

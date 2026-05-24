@@ -14,6 +14,8 @@ cd /home/ck/RoboClaw
 - `RuleControlTask` 现在是统一管理入口，持有 `G01Env`，通过 CoRobot app 生命周期加载和重置。
 - `mcp_control_demo` 仍保留 AprilTag、calibration、30Hz action builder 等外部功能模块。
 - 旧入口 `mcp_control_demo.corobot_skill_task.skill_task.McpControlSkillTask` 保留为兼容 shim，继承 `RuleControlTask`。
+- 对外 `move_eef` 的目标点现在按 Omnipicker 夹爪中心 TCP 解释；底层 A2D
+  仍然接收 wrist/link7 目标，控制层会自动减去固定偏移 `[0, 0, 0.14308]`。
 
 接口变化：
 
@@ -25,7 +27,7 @@ cd /home/ck/RoboClaw
 测试辅助：
 
 - 新增 `scripts/test_small_move_eef.sh`。
-- 脚本会先读取当前 EEF 的 camera-frame 坐标，再加一个小的 camera-frame delta，默认只打印 payload；设置 `EXECUTE_MOVE=1` 才执行。
+- 脚本会先读取当前夹爪中心 TCP 的 camera-frame 坐标，再加一个小的 camera-frame delta，默认只打印 payload；设置 `EXECUTE_MOVE=1` 才执行。
 
 当前重要结论：
 
@@ -346,6 +348,8 @@ curl -sS -X POST http://localhost:8765/skill/get_eef_pose \
 说明：
 
 - `position_exec_m` 是当前 EEF 在 `base_link` 下的位置。
+- 当前 `position_exec_m` / `position_camera_m` 表示夹爪中心 TCP。
+- `wrist_position_exec_m` / `wrist_position_camera_m` 表示底层 A2D 实际控制的 wrist/link7 frame。
 - `position_camera_m` 是通过 `T_exec_camera` 转出的 camera-frame 位置。
 - 当前 `T_exec_camera` 是基于固定 head/waist 复位姿态合成的真实 head 相机外参，因此 `position_camera_m` 和 `position_exec_m` 不会再相等。
 
@@ -398,7 +402,7 @@ ARM=right DURATION_S=2.0 EXECUTE_MOVE=1 bash scripts/test_small_move_eef.sh -0.0
 
 脚本逻辑：
 
-1. 调 `/skill/get_eef_pose` 读取当前 EEF camera-frame 坐标。
+1. 调 `/skill/get_eef_pose` 读取当前夹爪中心 TCP 的 camera-frame 坐标。
 2. 将输入 delta 加到当前 `position_camera_m`。
 3. 调 `/skill/move_eef`。
 4. 不传 orientation，因此控制层保留当前 EEF 姿态。
@@ -432,7 +436,15 @@ curl -sS -X POST http://localhost:8765/skill/move_eef \
 [x, y, z, roll, pitch, yaw]
 ```
 
-`get_eef_pose` 返回的当前姿态仍是 `orientation_exec_xyzw` 四元数；`move_eef` 构造 action 时会转换成底层需要的 rpy。
+对外 `target_position_camera_m` 是夹爪中心 TCP。构造 action 时会先换算成底层
+`arm_left_link7/arm_right_link7` wrist 目标，再写入 `EEF_ABS`：
+
+```text
+wrist_target = gripper_center_target - R_wrist * [0, 0, 0.14308]
+```
+
+`get_eef_pose` 返回的当前姿态仍是 `orientation_exec_xyzw` 四元数；`move_eef`
+构造 action 时会转换成底层需要的 rpy。
 
 ## 8. 夹爪、抬升、放置、抓取测试
 
@@ -494,6 +506,43 @@ ARM=right bash scripts/test_grasp_by_tag.sh 0
 3. descend to grasp point
 4. close gripper
 5. lift
+
+如果需要在闭合夹爪前人为加入一个 `base_link` 坐标系下的偏移量，不改底层控制逻辑，使用脚本：
+
+```bash
+ARM=right bash scripts/test_grasp_by_tag_base_offset.sh 0 0.00 0.00 0.02
+```
+
+这个命令默认只 dry-run，会打印：
+
+- tag 的 `position_camera_m`
+- tag 转到 `base_link` 后的位置
+- 加上 base offset 后的 grasp 点，即期望夹爪中心 TCP 到达的位置
+- approach 点
+- 闭合后沿 `base_link +Z` 抬升后的目标点
+- 每一步实际要调用的 `/skill/...` payload
+
+确认点位安全后再执行：
+
+```bash
+ARM=right EXECUTE_GRASP=1 bash scripts/test_grasp_by_tag_base_offset.sh 0 0.00 0.00 0.02
+```
+
+参数含义：
+
+```text
+<tag_id> <dx_base_m> <dy_base_m> <dz_base_m>
+```
+
+脚本序列：
+
+1. `/skill/detect_tags`
+2. `/skill/get_tag_pose`
+3. 将 tag camera 坐标转换到 `base_link`
+4. 在 `base_link` 下加人工偏移
+5. 转回 camera 坐标调用 `/skill/move_eef`；控制层自动把夹爪中心目标换算成 wrist/link7 目标
+6. `/skill/gripper` 闭合
+7. 使用 `base_link +Z` 计算 lift 目标，再调用 `/skill/move_eef`
 
 ## 9. MCP Server 测试
 

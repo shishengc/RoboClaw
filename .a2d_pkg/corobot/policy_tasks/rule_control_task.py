@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from corobot.envs.g01_env import G01Env
 from corobot.policy_tasks.policy_task_base import PolicyTaskBase
 from corobot.protocol.protocol_schemas import Action
@@ -12,11 +14,13 @@ from corobot.utils.log_setting import CoLogger as logger
 
 from mcp_control_demo.calibration import CalibrationConfig, load_calibration_config
 from mcp_control_demo.control import (
+    GRIPPER_CENTER_OFFSET_LINK7_M,
     build_grasp_by_tag_sequence,
     build_gripper_action,
     build_lift_eef_action,
     build_move_eef_action,
     build_place_down_sequence,
+    wrist_to_gripper_center_exec,
 )
 from mcp_control_demo.control.timing import validate_no_control_hz
 from mcp_control_demo.perception import AprilTagPerceptionService
@@ -152,27 +156,42 @@ class RuleControlTask(PolicyTaskBase):
                 "exec_frame": calibration.exec_frame,
             }
 
-        position_exec = _float_list(_get(pose_exec, "position"), 3)
+        wrist_position_exec = _float_list(_get(pose_exec, "position"), 3)
         orientation_exec = _float_list(_get(pose_exec, "orientation"), 4)
-        if position_exec is None:
+        if wrist_position_exec is None:
             return {
                 "ok": False,
                 "message": f"current {arm} EEF pose in {calibration.exec_frame} does not contain position",
                 "arm": arm,
                 "exec_frame": calibration.exec_frame,
             }
+        if orientation_exec is not None:
+            position_exec = [
+                float(value)
+                for value in wrist_to_gripper_center_exec(wrist_position_exec, orientation_exec).tolist()
+            ]
+        else:
+            position_exec = wrist_position_exec
         result: dict[str, Any] = {
             "ok": True,
             "arm": arm,
             "exec_frame": calibration.exec_frame,
+            "eef_target_frame": "gripper_center",
             "position_exec_m": position_exec,
+            "wrist_position_exec_m": wrist_position_exec,
             "orientation_exec_xyzw": orientation_exec,
+            "gripper_center_offset_link7_m": [
+                float(value) for value in np.asarray(GRIPPER_CENTER_OFFSET_LINK7_M, dtype=np.float64).reshape(3)
+            ],
             "camera_frame": camera_frame or calibration.camera_frame,
         }
 
         try:
             result["position_camera_m"] = [
                 float(value) for value in calibration.exec_to_camera_point(position_exec, camera_frame).tolist()
+            ]
+            result["wrist_position_camera_m"] = [
+                float(value) for value in calibration.exec_to_camera_point(wrist_position_exec, camera_frame).tolist()
             ]
             result["camera_pose_available"] = True
         except Exception as exc:

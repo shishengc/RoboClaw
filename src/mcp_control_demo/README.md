@@ -13,6 +13,9 @@ Agent MCP tool
 核心约定：
 
 - 对外 tool 坐标统一为相机坐标系，默认 `camera_frame=head_camera_optical`。
+- 对外 `move_eef/lift_eef/place_down/grasp_by_tag` 的 EEF 目标表示 Omnipicker
+  夹爪中心 TCP；底层 A2D 仍控制 wrist/link7 frame，控制层会自动扣除固定
+  `[0, 0, 0.14308]m` TCP 偏移。
 - 控制执行前通过 `T_exec_camera` 转成 CoRobot 支持的执行坐标系，默认 `exec_frame=base_link`。
 - 所有轨迹固定 `30Hz`，不允许通过 tool 参数覆盖。
 - MCP server 不持有 `G01Env`，真实机器人环境只在 CoRobot skill task 中管理。
@@ -52,12 +55,12 @@ env_config:
 仓库内已有一个根据头部相机标定生成的配置入口：
 
 ```text
-src/mcp_control_demo/config/mcp_control_calibration_head_camera_20260520.yaml
-src/mcp_control_demo/config/mcp_control_task_head_camera.yaml
-src/mcp_control_demo/config/corobot_app_mcp_control.yaml
+src/mcp_control_demo/config/mcp_control_calibration.yaml
+src/mcp_control_demo/config/rule_control_app_config.yaml
 ```
 
-其中 calibration 已填入相机内参和畸变参数，但 `T_exec_camera` 仍为空；真实控制前必须补齐外参。
+其中 calibration 已填入头部相机内参、畸变参数和固定 head/waist 复位姿态下的
+`T_exec_camera`。如果 head/waist 在任务中运动，需要改成运行时动态 FK 合成外参。
 
 CoRobot app 可加载：
 

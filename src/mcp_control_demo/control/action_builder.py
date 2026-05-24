@@ -14,6 +14,7 @@ from .timing import TrajectoryTiming, make_timing
 OPEN_GRIPPER = 0.0
 CLOSE_GRIPPER = 1.0
 GRIPPER_STATE_CLOSE_UNITS = 120.0
+GRIPPER_CENTER_OFFSET_LINK7_M = np.asarray([0.0, 0.0, 0.14308], dtype=np.float64)
 _FK_SOLVER = None
 
 
@@ -28,11 +29,15 @@ def build_move_eef_action(
     duration_s: float | None = 1.0,
     gripper_value: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    current_position = _current_eef_position(observation, arm, calibration.exec_frame)
-    if current_position is None:
+    current_pose = _current_eef_pose(observation, arm, calibration.exec_frame)
+    current_position = _pose_position(current_pose)
+    current_orientation = _pose_orientation(current_pose)
+    if current_position is not None and current_orientation is not None:
+        current_center = wrist_to_gripper_center_exec(current_position, current_orientation)
+    else:
         target_exec = calibration.camera_to_exec_point(target_position_camera_m, camera_frame)
-        current_position = target_exec.copy()
-    current_camera = calibration.exec_to_camera_point(current_position, camera_frame)
+        current_center = target_exec.copy()
+    current_camera = calibration.exec_to_camera_point(current_center, camera_frame)
     return build_move_eef_between_camera_points(
         observation,
         calibration,
@@ -62,14 +67,17 @@ def build_move_eef_between_camera_points(
     timing = make_timing(duration_s)
     start_exec = calibration.camera_to_exec_point(start_position_camera_m, camera_frame)
     target_exec = calibration.camera_to_exec_point(target_position_camera_m, camera_frame)
-    orientation_exec_rpy = _target_orientation_exec_rpy(
+    orientation_exec_xyzw = _target_orientation_exec_xyzw(
         observation,
         calibration,
         arm,
         camera_frame,
         target_orientation_camera_xyzw,
     )
-    rows = _interpolate_pose_rows(start_exec, target_exec, orientation_exec_rpy, timing.num_steps)
+    orientation_exec_rpy = _quat_xyzw_to_rpy(orientation_exec_xyzw)
+    start_wrist_exec = gripper_center_to_wrist_exec(start_exec, orientation_exec_xyzw)
+    target_wrist_exec = gripper_center_to_wrist_exec(target_exec, orientation_exec_xyzw)
+    rows = _interpolate_pose_rows(start_wrist_exec, target_wrist_exec, orientation_exec_rpy, timing.num_steps)
     action = _eef_action(calibration.exec_frame, arm, rows, timing)
     if gripper_value is not None:
         _attach_gripper_rows(action, observation, arm, float(gripper_value), timing.num_steps)
@@ -80,6 +88,10 @@ def build_move_eef_between_camera_points(
         "start_position_camera_m": _round_list(start_position_camera_m),
         "target_position_camera_m": _round_list(target_position_camera_m),
         "target_position_exec_m": _round_list(target_exec),
+        "start_wrist_position_exec_m": _round_list(start_wrist_exec),
+        "target_wrist_position_exec_m": _round_list(target_wrist_exec),
+        "gripper_center_offset_link7_m": _round_list(GRIPPER_CENTER_OFFSET_LINK7_M),
+        "a2d_target_frame": f"arm_{arm}_link7",
     }
 
 
@@ -185,10 +197,13 @@ def _build_offset_eef_action(
     duration_s: float | None,
     label: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    current_exec = _current_eef_position(observation, arm, calibration.exec_frame)
-    if current_exec is None:
+    current_pose = _current_eef_pose(observation, arm, calibration.exec_frame)
+    current_exec = _pose_position(current_pose)
+    current_orientation = _pose_orientation(current_pose)
+    if current_exec is None or current_orientation is None:
         raise ValueError(f"current {arm} EEF pose is unavailable in {calibration.exec_frame}")
-    start_camera = calibration.exec_to_camera_point(current_exec, camera_frame)
+    current_center_exec = wrist_to_gripper_center_exec(current_exec, current_orientation)
+    start_camera = calibration.exec_to_camera_point(current_center_exec, camera_frame)
     target_camera = start_camera + axis_camera * float(distance_m)
     action, meta = build_move_eef_between_camera_points(
         observation,
@@ -245,7 +260,7 @@ def _interpolate_scalar_rows(start: float, target: float, steps: int) -> list[li
     return [[float(start + (target - start) * (index / steps))] for index in range(1, steps + 1)]
 
 
-def _target_orientation_exec_rpy(
+def _target_orientation_exec_xyzw(
     observation: Any,
     calibration: CalibrationConfig,
     arm: str,
@@ -254,14 +269,41 @@ def _target_orientation_exec_rpy(
 ) -> list[float]:
     if target_orientation_camera_xyzw is not None:
         calibration.require_camera_frame(camera_frame)
-        quat_exec = transform_orientation_xyzw(calibration.require_transform(), target_orientation_camera_xyzw)
-        return _quat_xyzw_to_rpy(quat_exec)
+        return transform_orientation_xyzw(calibration.require_transform(), target_orientation_camera_xyzw)
     current = _current_eef_orientation(observation, arm, calibration.exec_frame)
-    return _quat_xyzw_to_rpy(current) if current is not None else [0.0, 0.0, 0.0]
+    return current if current is not None else [0.0, 0.0, 0.0, 1.0]
+
+
+def wrist_to_gripper_center_exec(
+    wrist_position_exec_m: list[float] | np.ndarray,
+    wrist_orientation_exec_xyzw: list[float] | np.ndarray,
+) -> np.ndarray:
+    return np.asarray(wrist_position_exec_m, dtype=np.float64).reshape(3) + _tcp_offset_exec(
+        wrist_orientation_exec_xyzw
+    )
+
+
+def gripper_center_to_wrist_exec(
+    gripper_center_exec_m: list[float] | np.ndarray,
+    wrist_orientation_exec_xyzw: list[float] | np.ndarray,
+) -> np.ndarray:
+    return np.asarray(gripper_center_exec_m, dtype=np.float64).reshape(3) - _tcp_offset_exec(
+        wrist_orientation_exec_xyzw
+    )
+
+
+def _tcp_offset_exec(wrist_orientation_exec_xyzw: list[float] | np.ndarray) -> np.ndarray:
+    return R.from_quat(np.asarray(wrist_orientation_exec_xyzw, dtype=np.float64).reshape(4)).apply(
+        GRIPPER_CENTER_OFFSET_LINK7_M
+    )
 
 
 def _current_eef_position(observation: Any, arm: str, frame: str) -> np.ndarray | None:
     pose = _current_eef_pose(observation, arm, frame)
+    return _pose_position(pose)
+
+
+def _pose_position(pose: Any) -> np.ndarray | None:
     if pose is None:
         return None
     position = _get(pose, "position")
@@ -272,6 +314,10 @@ def _current_eef_position(observation: Any, arm: str, frame: str) -> np.ndarray 
 
 def _current_eef_orientation(observation: Any, arm: str, frame: str) -> list[float] | None:
     pose = _current_eef_pose(observation, arm, frame)
+    return _pose_orientation(pose)
+
+
+def _pose_orientation(pose: Any) -> list[float] | None:
     if pose is None:
         return None
     orientation = _get(pose, "orientation")
