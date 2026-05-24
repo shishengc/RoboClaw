@@ -15,9 +15,19 @@ SOURCE_TAG_ID="${SOURCE_TAG_ID:-0}"
 DEST_TAG_ID="${DEST_TAG_ID:-1}"
 EXECUTE_PICK_PLACE="${EXECUTE_PICK_PLACE:-0}"
 
-if [[ $# -ne 3 && $# -ne 6 ]]; then
+usage() {
   cat >&2 <<'EOF'
 Usage:
+  ARM=right bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+    <source_tag_id> <dest_tag_id> \
+    <grasp_dx_base_m> <grasp_dy_base_m> <grasp_dz_base_m>
+
+  ARM=right bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+    <source_tag_id> <dest_tag_id> \
+    <grasp_dx_base_m> <grasp_dy_base_m> <grasp_dz_base_m> \
+    <place_dx_base_m> <place_dy_base_m> <place_dz_base_m>
+
+Legacy usage, still supported through SOURCE_TAG_ID / DEST_TAG_ID env:
   ARM=right bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
     <grasp_dx_base_m> <grasp_dy_base_m> <grasp_dz_base_m>
 
@@ -26,23 +36,24 @@ Usage:
     <place_dx_base_m> <place_dy_base_m> <place_dz_base_m>
 
 Example dry-run:
-  ARM=right bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh 0.00 0.00 -0.07
+  ARM=right bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh 0 2 0.00 0.00 -0.07
 
 Execute on robot:
-  ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh 0.00 0.00 -0.07
+  ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+    0 2 0.00 0.00 -0.07 -0.01 -0.02 0.02
 
 Behavior:
   1. Detect AprilTags.
-  2. Read SOURCE_TAG_ID, default 0, and DEST_TAG_ID, default 1.
-  3. Grasp the object at tag 0 with the provided base_link offset.
+  2. Read source tag and destination tag from CLI args, or env defaults.
+  3. Grasp the object at source tag with the provided base_link offset.
   4. Lift in base_link +Z.
-  5. Move above tag 1, descend to the tag 1 placement target, and open gripper.
+  5. Move above destination tag, descend to the placement target, and open gripper.
 
 Environment:
   COROBOT_URL             default http://localhost:8765
   ARM                     default right
-  SOURCE_TAG_ID           default 0
-  DEST_TAG_ID             default 1
+  SOURCE_TAG_ID           default 0, overridden by CLI source_tag_id
+  DEST_TAG_ID             default 1, overridden by CLI dest_tag_id
   CAMERA_FRAME            default head_camera_optical
   CALIBRATION_PATH        default src/mcp_control_demo/config/mcp_control_calibration.yaml
   MOVE_DURATION_S         default 2.0
@@ -53,10 +64,28 @@ Environment:
   EXECUTE_PICK_PLACE      default 0; set 1 to execute
 
 Notes:
-  If only one offset is provided, it is used for both grasping tag 0 and
-  placing relative to tag 1. This keeps the held object's tag-relative grasp
-  geometry consistent during placement.
+  If only one offset is provided, it is used for both grasping the source tag
+  and placing relative to the destination tag. This keeps the held object's
+  tag-relative grasp geometry consistent during placement.
 EOF
+}
+
+case "$#" in
+  3|6)
+    ;;
+  5|8)
+    SOURCE_TAG_ID="$1"
+    DEST_TAG_ID="$2"
+    shift 2
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+if [[ $# -ne 3 && $# -ne 6 ]]; then
+  usage
   exit 2
 fi
 
