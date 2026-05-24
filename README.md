@@ -110,6 +110,7 @@ make init
 
 - Start the TUI: `make run_tui`
 - Start the GUI: `make run_gui`
+- Tag0-to-Tag1 pick-and-place script notes: [`scripts/README_PICK_PLACE_TAGS.md`](scripts/README_PICK_PLACE_TAGS.md)
 
 ## 📄 Paper
 - Title: *RoboClaw: An Agentic Framework for Scalable Long-Horizon Robotic Tasks*
