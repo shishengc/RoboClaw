@@ -324,55 +324,10 @@ class ServicePolicyTask(PolicyTaskBase):
         # 3. 远程推理
         action = self._predict_action(std_model_input)
 
-        # 临时调试：每次只执行 action chunk 的前一半，便于观察连续策略输出。
-        step_duration = 0.06
-        wait_extra = 0.25
-
-        horizon = max(
-            len(action.left_arm.values) if action.left_arm is not None else 0,
-            len(action.right_arm.values) if action.right_arm is not None else 0,
-            len(action.head) if action.head is not None else 0,
-            len(action.waist) if action.waist is not None else 0,
-            len(action.left_effector) if action.left_effector is not None else 0,
-            len(action.right_effector) if action.right_effector is not None else 0,
-            len(action.wheels) if action.wheels is not None else 0,
-        )
-
-        if horizon <= 0:
-            logger.warning("远程推理返回的action为空，跳过执行")
-            return
-
-        step_count = max(1, horizon // 2)
-
-        data = action.model_dump()
-        for name in ("left_arm", "right_arm"):
-            if data.get(name) is not None:
-                data[name]["values"] = data[name]["values"][:step_count]
-
-        for name in ("head", "waist", "left_effector", "right_effector", "wheels"):
-            if data.get(name) is not None:
-                data[name] = data[name][:step_count]
-
-        data["timestamps"] = int(time.time() * 1e9)
-        data["trajectory_reference_time"] = step_duration * step_count
-        chunk_action = Action(**data)
-
-        wait_action_time = chunk_action.trajectory_reference_time + wait_extra
-        logger.info(
-            f"执行半个action chunk: {step_count}/{horizon} steps, "
-            f"trajectory_reference_time={chunk_action.trajectory_reference_time:.3f}s, "
-            f"wait_action_time={wait_action_time:.3f}s"
-        )
-
-        # 4. 执行动作：这里会阻塞等待半个chunk执行完成，然后下一轮重新推理
-        self._env.execute_action(chunk_action, wait_action_time)
-        self._step_count += 1
-        # 临时调试结束
-
         # # 4. 执行动作
-        # self._env.execute_action(action, 0)
+        self._env.execute_action(action, 0)
 
-        # self._step_count += 1
+        self._step_count += 1
 
     def _predict_action(self, std_model_input: STD_MODEL_INPUT) -> Action:
         """调用远程推理服务"""
