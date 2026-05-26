@@ -15,7 +15,6 @@ from corobot.utils.log_setting import CoLogger as logger
 from mcp_control_demo.calibration import CalibrationConfig, load_calibration_config
 from mcp_control_demo.control import (
     GRIPPER_CENTER_OFFSET_LINK7_M,
-    build_grasp_by_tag_sequence,
     build_gripper_action,
     build_lift_eef_action,
     build_move_eef_action,
@@ -304,39 +303,6 @@ class RuleControlTask(PolicyTaskBase):
         action, meta = build_gripper_action(obs, arm=arm, gripper_value=gripper_value, duration_s=duration_s)
         self._execute(action, meta["actual_duration_s"])
         return {"action": action, "meta": meta}
-
-    @expose_api(method="POST", path="/skill/grasp_by_tag")
-    def grasp_by_tag(
-        self,
-        arm: str,
-        tag_id: int,
-        camera_frame: str = "head_camera_optical",
-        approach_distance_m: float = 0.06,
-        lift_height_m: float = 0.10,
-        move_duration_s: float = 1.0,
-        gripper_duration_s: float = 0.5,
-        control_hz: float | None = None,
-        control_frequency_hz: float | None = None,
-    ) -> dict[str, Any]:
-        self._reject_control_frequency(control_hz, control_frequency_hz)
-        obs = self._observation()
-        tag_result = self.get_tag_pose(tag_id)
-        if not tag_result.get("ok"):
-            return tag_result
-        actions, meta = build_grasp_by_tag_sequence(
-            obs,
-            self._calibration_config(),
-            arm=arm,
-            tag_id=tag_id,
-            tag_pose=tag_result,
-            camera_frame=camera_frame,
-            approach_distance_m=approach_distance_m,
-            lift_height_m=lift_height_m,
-            move_duration_s=move_duration_s,
-            gripper_duration_s=gripper_duration_s,
-        )
-        self._execute_sequence(actions)
-        return {"actions": actions, "meta": meta, "tag": tag_result}
 
     def _observation(self):
         if self._env is None:

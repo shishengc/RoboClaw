@@ -22,19 +22,9 @@ class CalibrationConfig:
     camera_approach_axis: np.ndarray = field(default_factory=lambda: np.asarray([0.0, 0.0, -1.0]))
     camera_lift_axis: np.ndarray = field(default_factory=lambda: np.asarray([0.0, -1.0, 0.0]))
     camera_place_down_axis: np.ndarray = field(default_factory=lambda: np.asarray([0.0, 1.0, 0.0]))
-    tag_grasp_offsets_m: dict[int, np.ndarray] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CalibrationConfig":
-        tag_offsets: dict[int, np.ndarray] = {}
-        for raw_id, raw_cfg in (data.get("tag_offsets") or {}).items():
-            tag_id = int(raw_id)
-            if isinstance(raw_cfg, dict):
-                offset = raw_cfg.get("grasp_point_tag_m") or raw_cfg.get("grasp_offset_m") or [0.0, 0.0, 0.0]
-            else:
-                offset = raw_cfg
-            tag_offsets[tag_id] = np.asarray(offset, dtype=np.float64).reshape(3)
-
         return cls(
             camera_frame=str(data.get("camera_frame") or "head_camera_optical"),
             exec_frame=str(data.get("exec_frame") or "base_link"),
@@ -43,7 +33,6 @@ class CalibrationConfig:
             camera_approach_axis=normalize_vector(data.get("camera_approach_axis", [0.0, 0.0, -1.0])),
             camera_lift_axis=normalize_vector(data.get("camera_lift_axis", [0.0, -1.0, 0.0])),
             camera_place_down_axis=normalize_vector(data.get("camera_place_down_axis", [0.0, 1.0, 0.0])),
-            tag_grasp_offsets_m=tag_offsets,
         )
 
     @classmethod
@@ -67,27 +56,6 @@ class CalibrationConfig:
     def exec_to_camera_point(self, point_exec_m: list[float] | np.ndarray, camera_frame: str | None = None) -> np.ndarray:
         self.require_camera_frame(camera_frame)
         return transform_point(invert_transform(self.require_transform()), point_exec_m)
-
-    def grasp_point_from_tag(self, tag_id: int, tag_pose: dict[str, Any]) -> np.ndarray:
-        tag_position = _tag_position_camera(tag_pose)
-        offset = self.tag_grasp_offsets_m.get(int(tag_id))
-        if offset is None:
-            return tag_position
-
-        rotation = tag_pose.get("rotation_matrix")
-        if rotation is None:
-            return tag_position + offset
-        return tag_position + np.asarray(rotation, dtype=np.float64).reshape(3, 3) @ offset
-
-
-def _tag_position_camera(tag_pose: dict[str, Any]) -> np.ndarray:
-    for key in ("position_camera_m", "translation_m", "target_position_camera_m"):
-        if key in tag_pose and tag_pose[key] is not None:
-            return np.asarray(tag_pose[key], dtype=np.float64).reshape(3)
-    camera_pose = tag_pose.get("camera_pose") or {}
-    if camera_pose.get("position_m") is not None:
-        return np.asarray(camera_pose["position_m"], dtype=np.float64).reshape(3)
-    raise ValueError("tag pose does not contain a camera-frame position")
 
 
 def load_calibration_config(path: str | Path) -> CalibrationConfig:

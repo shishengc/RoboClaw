@@ -33,7 +33,6 @@ SKILL_TOOL_ENDPOINTS = {
     "place_down": ("POST", "/skill/place_down"),
     "open_gripper": ("POST", "/skill/gripper"),
     "close_gripper": ("POST", "/skill/gripper"),
-    "grasp_by_tag": ("POST", "/skill/grasp_by_tag"),
 }
 
 
@@ -284,23 +283,6 @@ def _mcp_control_tools() -> list[types.Tool]:
                 "properties": {
                     "arm": {"type": "string", "enum": ["left", "right"]},
                     "duration_s": {"type": "number", "default": 0.5},
-                },
-            },
-        ),
-        types.Tool(
-            name="grasp_by_tag",
-            description="根据 tag_id 的相机坐标执行 approach、descend、close、lift 抓取序列。",
-            inputSchema={
-                "type": "object",
-                "required": ["arm", "tag_id"],
-                "properties": {
-                    "arm": {"type": "string", "enum": ["left", "right"]},
-                    "tag_id": {"type": "integer"},
-                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
-                    "approach_distance_m": {"type": "number", "default": 0.06},
-                    "lift_height_m": {"type": "number", "default": 0.10},
-                    "move_duration_s": {"type": "number", "default": 1.0},
-                    "gripper_duration_s": {"type": "number", "default": 0.5},
                 },
             },
         ),

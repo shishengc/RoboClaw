@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from corobot.policy_tasks.rule_control_task import RuleControlTask
 from mcp_control_demo.calibration import CalibrationConfig
+from mcp_control_demo.control import GRIPPER_CENTER_OFFSET_LINK7_M
 from mcp_control_demo.corobot_skill_task.skill_task import McpControlSkillTask
 
 
@@ -85,6 +88,6 @@ def test_get_eef_pose_returns_exec_and_camera_position(tmp_path):
     result = task.get_eef_pose("right")
 
     assert result["ok"] is True
-    assert result["position_exec_m"] == [0.1, 0.2, 0.3]
-    assert result["position_camera_m"] == [0.1, 0.2, 0.3]
+    assert result["position_exec_m"] == pytest.approx([0.1, 0.2, 0.3 + GRIPPER_CENTER_OFFSET_LINK7_M[2]])
+    assert result["position_camera_m"] == pytest.approx([0.1, 0.2, 0.3 + GRIPPER_CENTER_OFFSET_LINK7_M[2]])
     assert result["camera_pose_available"] is True

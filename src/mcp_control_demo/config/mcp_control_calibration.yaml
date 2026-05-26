@@ -79,6 +79,3 @@ T_exec_camera:
 camera_approach_axis: [0.0, 0.0, -1.0]
 camera_lift_axis: [0.0, -1.0, 0.0]
 camera_place_down_axis: [0.0, 1.0, 0.0]
-
-# Fill per-tag grasp offsets after measuring tag placement on each object.
-tag_offsets: {"0": {"grasp_point_tag_m": [0.0, 0.0, 0.0]}}

@@ -324,7 +324,7 @@ class ServicePolicyTask(PolicyTaskBase):
         # 3. 远程推理
         action = self._predict_action(std_model_input)
 
-        # 临时调试：每次只执行 action chunk 的前一半，仿照 debug_corobot_policy_receding_continuous.py
+        # 临时调试：每次只执行 action chunk 的前一半，便于观察连续策略输出。
         step_duration = 0.06
         wait_extra = 0.25
 

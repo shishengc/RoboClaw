@@ -30,5 +30,5 @@ def test_expected_primitive_tools_are_present():
         "place_down",
         "open_gripper",
         "close_gripper",
-        "grasp_by_tag",
     } <= names
+    assert "grasp_by_tag" not in names

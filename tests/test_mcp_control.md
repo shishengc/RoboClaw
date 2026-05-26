@@ -26,8 +26,8 @@ cd /home/ck/RoboClaw
 
 测试辅助：
 
-- 新增 `scripts/test_small_move_eef.sh`。
-- 脚本会先读取当前夹爪中心 TCP 的 camera-frame 坐标，再加一个小的 camera-frame delta，默认只打印 payload；设置 `EXECUTE_MOVE=1` 才执行。
+- 旧的 `scripts/test_small_move_eef.sh` 已移除；小范围移动测试改为直接调用
+  `/skill/get_eef_pose` 与 `/skill/move_eef`，避免脚本承担核心控制逻辑。
 
 当前重要结论：
 
@@ -81,7 +81,7 @@ perception:
   camera_name: head
   camera_frame: head_camera_optical
   tag_family: tag25h9
-  tag_size_m: 0.0384
+  tag_size_m: 0.019
 reset_pose:
   target_head_positions: [0.0, 0.43633230555555524]
   target_waist_positions: [0.8901176920412174, 0.4598677062988281]
@@ -184,7 +184,6 @@ assert {s["name"] for s in MCP_CONTROL_TOOL_SCHEMAS} >= {
     "place_down",
     "open_gripper",
     "close_gripper",
-    "grasp_by_tag",
 }
 print(len(MCP_CONTROL_TOOL_SCHEMAS), "schemas ok")
 PY
@@ -193,7 +192,7 @@ PY
 期望：
 
 ```text
-11 schemas ok
+10 schemas ok
 ```
 
 如果环境有 `pytest`，可运行：
@@ -309,7 +308,7 @@ curl -sS -X POST http://localhost:8765/skill/get_tag_pose \
 - `camera_frame`
 - `tag_size_m`
 
-当前 `/skill/get_tag_pose` 返回的 tag 位置仍以 `position_camera_m` 为主；控制层会在 `move_eef`、`lift_eef`、`place_down`、`grasp_by_tag` 构造 action 时使用 `T_exec_camera` 转到 `base_link`。
+当前 `/skill/get_tag_pose` 返回的 tag 位置仍以 `position_camera_m` 为主；控制层会在 `move_eef`、`lift_eef`、`place_down` 构造 action 时使用 `T_exec_camera` 转到 `base_link`。
 
 手动理解转换关系：
 
@@ -376,36 +375,31 @@ camera_pose_error: missing T_exec_camera calibration
 - 首次移动使用 `0.002m` 到 `0.005m`。
 - `duration_s` 建议设为 `2.0` 或更长。
 
-先 dry-run，只打印当前点和目标 payload，不执行运动：
+先读取当前右臂夹爪中心 TCP 的 camera-frame 坐标：
 
 ```bash
-ARM=right DURATION_S=2.0 bash scripts/test_small_move_eef.sh 0.002 0 0
+curl -sS -X POST http://localhost:8765/skill/get_eef_pose \
+  -H "Content-Type: application/json" \
+  -d '{"arm": "right", "camera_frame": "head_camera_optical"}' \
+  | python3 -m json.tool
 ```
 
-确认目标安全后执行 2mm：
+确认当前点安全后，手动在 `position_camera_m` 上加一个很小的 delta，例如
+`x + 0.002m`，再调用 `/skill/move_eef`。示例中的坐标需要替换为你刚刚读到
+并加完 delta 的目标坐标：
 
 ```bash
-ARM=right DURATION_S=2.0 EXECUTE_MOVE=1 bash scripts/test_small_move_eef.sh 0.002 0 0
+curl -sS -X POST http://localhost:8765/skill/move_eef \
+  -H "Content-Type: application/json" \
+  -d '{
+    "arm": "right",
+    "camera_frame": "head_camera_optical",
+    "target_position_camera_m": [0.582, -0.33, 0.74],
+    "duration_s": 2.0
+  }' | python3 -m json.tool
 ```
 
-如果方向合理，再执行 5mm：
-
-```bash
-ARM=right DURATION_S=2.0 EXECUTE_MOVE=1 bash scripts/test_small_move_eef.sh 0.005 0 0
-```
-
-反向回退示例：
-
-```bash
-ARM=right DURATION_S=2.0 EXECUTE_MOVE=1 bash scripts/test_small_move_eef.sh -0.002 0 0
-```
-
-脚本逻辑：
-
-1. 调 `/skill/get_eef_pose` 读取当前夹爪中心 TCP 的 camera-frame 坐标。
-2. 将输入 delta 加到当前 `position_camera_m`。
-3. 调 `/skill/move_eef`。
-4. 不传 orientation，因此控制层保留当前 EEF 姿态。
+注意：不传 orientation 时，控制层会保留当前 EEF 姿态。
 
 直接调用 `move_eef` 示例：
 
@@ -569,7 +563,6 @@ lift_eef
 place_down
 open_gripper
 close_gripper
-grasp_by_tag
 ```
 
 MCP 调用 `move_eef` 示例：
@@ -661,6 +654,17 @@ T_exec_camera(q) = T_base_head_pitch_link(q) * T_head_pitch_camera
 
 并且每次构造控制 action 前使用当前 `head_joint_states`、`waist_joint_states` 更新外参。
 
+重新提供内参、外参或 URDF 时，需要重新生成
+`src/mcp_control_demo/config/mcp_control_calibration.yaml`，并同步
+`.a2d_pkg/corobot/config/rule_control_task_config.yml` 的 `calibration_path`、
+`perception.camera_frame`、`perception.tag_size_m` 和 reset pose。生成逻辑必须仍然满足：
+
+```text
+T_exec_camera = T_base_head_pitch_link(reset) * T_head_pitch_camera
+```
+
+如果外参文件给的是 `camera <- head_pitch`，需要先求逆再写入。生成后必须重启 CoRobot app。
+
 ## 11. 常见问题
 
 ### `has_T_exec_camera=false`
@@ -718,7 +722,6 @@ curl -sS http://localhost:8765/skill/status | python3 -m json.tool
 - `camera_approach_axis`
 - `camera_lift_axis`
 - `camera_place_down_axis`
-- `tag_offsets`
 
 不要再用 identity 补偿真实相机外参；当前配置已经使用 head 相机外参合成到 `base_link`。
 

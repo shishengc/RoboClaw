@@ -26,7 +26,6 @@
 - `place_down`: 沿已配置 camera-frame 下降轴放置并可打开夹爪
 - `open_gripper`: 打开指定夹爪
 - `close_gripper`: 关闭指定夹爪
-- `grasp_by_tag`: 根据 tag 坐标执行 approach、descend、close、lift
 
 这些 primitive tools 的控制频率固定为 `30Hz`。Tool schema 不暴露 `control_hz`，如果调用参数中包含 `control_hz` 或 `control_frequency_hz` 会直接拒绝。
 
@@ -46,7 +45,7 @@
 2. 需要回到初始姿态时调用 `reset_robot`。
 3. `get_eef_pose` 可用于读取当前夹爪中心 TCP 位置并做小范围移动测试。
 4. `detect_tags` 或 `get_apriltag_pose` 获取相机坐标系目标。
-5. `move_eef`、`grasp_by_tag`、`lift_eef` 或 `place_down` 执行确定性 primitive。
+5. 通过 `open_gripper`、`move_eef`、`close_gripper`、`lift_eef` 或 `place_down` 组合执行确定性 primitive。
 
 示例：
 

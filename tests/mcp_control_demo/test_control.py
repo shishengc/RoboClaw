@@ -9,7 +9,6 @@ from mcp_control_demo.calibration import CalibrationConfig
 from mcp_control_demo.control import (
     CONTROL_HZ,
     GRIPPER_CENTER_OFFSET_LINK7_M,
-    build_grasp_by_tag_sequence,
     build_gripper_action,
     build_lift_eef_action,
     build_move_eef_action,
@@ -132,23 +131,6 @@ def test_gripper_action_is_30hz_and_sets_both_effector_fields():
     assert action["right_effector"][-1] == [1.0]
     assert math.isclose(action["trajectory_reference_time"], 15 / 30.0)
     assert meta["control_hz"] == 30.0
-
-
-def test_grasp_by_tag_sequence_uses_30hz_for_every_segment():
-    actions, meta = build_grasp_by_tag_sequence(
-        _obs(),
-        CalibrationConfig.identity_for_tests(),
-        arm="right",
-        tag_id=3,
-        tag_pose={"tag_id": 3, "position_camera_m": [0.0, 0.0, 0.4]},
-        move_duration_s=0.1,
-        gripper_duration_s=0.1,
-    )
-    assert len(actions) == 5
-    for action in actions:
-        _assert_action_schema(action)
-        assert math.isclose(action["trajectory_reference_time"] * 30.0, round(action["trajectory_reference_time"] * 30.0))
-    assert meta["grasp_point_camera_m"] == [0.0, 0.0, 0.4]
 
 
 def test_control_hz_override_is_rejected():

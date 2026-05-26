@@ -13,7 +13,7 @@ Agent MCP tool
 核心约定：
 
 - 对外 tool 坐标统一为相机坐标系，默认 `camera_frame=head_camera_optical`。
-- 对外 `move_eef/lift_eef/place_down/grasp_by_tag` 的 EEF 目标表示 Omnipicker
+- 对外 `move_eef/lift_eef/place_down` 的 EEF 目标表示 Omnipicker
   夹爪中心 TCP；底层 A2D 仍控制 wrist/link7 frame，控制层会自动扣除固定
   `[0, 0, 0.14308]m` TCP 偏移。
 - 控制执行前通过 `T_exec_camera` 转成 CoRobot 支持的执行坐标系，默认 `exec_frame=base_link`。

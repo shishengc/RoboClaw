@@ -15,14 +15,11 @@ T_exec_camera:
 camera_approach_axis: [0.0, 0.0, -1.0]
 camera_lift_axis: [0.0, -1.0, 0.0]
 camera_place_down_axis: [0.0, 1.0, 0.0]
-tag_offsets:
-  "3":
-    grasp_point_tag_m: [0.0, 0.0, 0.0]
 ```
 
 如果只有相机内参、还没有相机到执行坐标系的外参，可以先写 `intrinsics`
 并把 `T_exec_camera` 留空。此时 AprilTag 感知可以使用配置里的
-camera params 作为 fallback，但 `move_eef/lift_eef/place_down/grasp_by_tag`
+camera params 作为 fallback，但 `move_eef/lift_eef/place_down`
 这类真实控制 primitive 会拒绝执行，直到补齐 `T_exec_camera`。
 
 当前已根据 `/home/ck/robot_test/calib_output/camera_params_20260520_111317.yaml`
@@ -42,6 +39,5 @@ src/mcp_control_demo/config/corobot_app_mcp_control.yaml
 - `camera_approach_axis`: 抓取接近方向，在 camera frame 中定义。
 - `camera_lift_axis`: 抬升方向，在 camera frame 中定义。
 - `camera_place_down_axis`: 放置下降方向，在 camera frame 中定义。
-- `tag_offsets`: 每个 tag 的抓取点相对 tag 坐标系偏移。
 
 如果缺少 `T_exec_camera`，控制层必须拒绝执行；不能把 camera-frame 坐标直接发给 CoRobot controller。

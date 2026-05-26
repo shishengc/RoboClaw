@@ -7,10 +7,6 @@ APRILTAG_SITE_PACKAGES ?= /home/ck/miniconda3/envs/depth/lib/python3.10/site-pac
 CAMERA_ARGS ?=
 INFER_POLICY_ARGS ?=
 DRYRUN_POLICY_ARGS ?=
-DEBUG_POLICY_STEP_ARGS ?=
-DEBUG_POLICY_RECEDING_CONTINUOUS_ARGS ?=
-DEBUG_POLICY_RECEDING_CONTINUOUS_REVERSE_ARGS ?=
-EXECUTE_ACTION_CHUNK_ARGS ?=
 COROBOT_APP_ARGS ?=
 ROBOCLAW_AGENT_TRACE ?= 0
 ROBOCLAW_AGENT_TRACE_DIR ?= artifacts/agent_traces
@@ -91,22 +87,10 @@ test_a2d:
 	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}tests/agent_demo/machine_layer/test_dataloader_a2d.py
 
 test_camera:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_corobot_camera.py $(CAMERA_ARGS)
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_camera.py $(CAMERA_ARGS)
 
 test_infer_policy:
 	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_infer_policy.py $(INFER_POLICY_ARGS) $(DRYRUN_POLICY_ARGS)
-
-debug_policy_step:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_step.py $(DEBUG_POLICY_STEP_ARGS)
-
-debug_policy_receding_continuous:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_receding_continuous.py $(DEBUG_POLICY_RECEDING_CONTINUOUS_ARGS)
-
-debug_policy_receding_continuous_reverse:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_receding_continuous_reverse.py $(DEBUG_POLICY_RECEDING_CONTINUOUS_REVERSE_ARGS)
-
-execute_action_chunk:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/execute_corobot_action_chunk.py $(EXECUTE_ACTION_CHUNK_ARGS)
 
 test_udp:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/interaction_layer/test_udp.py
