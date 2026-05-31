@@ -1,8 +1,0 @@
-app:
-  host: 0.0.0.0
-  port: 8765
-
-default_policytask:
-  policy_module: corobot.policy_tasks.rule_control_task
-  class_name: RuleControlTask
-  config_path: /home/ck/RoboClaw/.a2d_pkg/corobot/config/rule_control_task_config.yml

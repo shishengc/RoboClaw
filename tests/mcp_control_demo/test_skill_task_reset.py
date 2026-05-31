@@ -30,7 +30,6 @@ def test_reset_robot_is_exposed_and_uses_safe_order(tmp_path):
     config_path = tmp_path / "task.yaml"
     config_path.write_text(
         """
-calibration_path: /tmp/unused.yaml
 reset_on_initialize: false
 reset_pose:
   target_grippers_positions: [0.2, 0.3]
@@ -71,7 +70,7 @@ def test_mcp_control_skill_task_is_compatible_alias():
 
 def test_get_eef_pose_returns_exec_and_camera_position(tmp_path):
     config_path = tmp_path / "task.yaml"
-    config_path.write_text("calibration_path: /tmp/unused.yaml\n", encoding="utf-8")
+    config_path.write_text("{}\n", encoding="utf-8")
     task = RuleControlTask(str(config_path))
     task._calibration = CalibrationConfig.identity_for_tests()
     task._env = FakeEnv(
@@ -99,7 +98,7 @@ def test_get_eef_pose_returns_exec_and_camera_position(tmp_path):
 
 def test_camera_views_returns_three_view_metadata_and_base64(tmp_path):
     config_path = tmp_path / "task.yaml"
-    config_path.write_text("calibration_path: /tmp/unused.yaml\n", encoding="utf-8")
+    config_path.write_text("{}\n", encoding="utf-8")
     task = RuleControlTask(str(config_path))
     task._env = FakeEnv(
         {
@@ -140,7 +139,7 @@ def test_camera_views_saves_rgb_observation_as_correct_jpg_colors(tmp_path):
     import cv2
 
     config_path = tmp_path / "task.yaml"
-    config_path.write_text("calibration_path: /tmp/unused.yaml\n", encoding="utf-8")
+    config_path.write_text("{}\n", encoding="utf-8")
     task = RuleControlTask(str(config_path))
 
     red_rgb = np.zeros((16, 16, 3), dtype=np.uint8)

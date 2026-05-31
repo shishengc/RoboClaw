@@ -1,9 +1,53 @@
 # RuleControlTask configuration.
-#
-# RuleControlTask lives in corobot.policy_tasks and delegates camera calibration,
-# AprilTag perception, and 30Hz action construction to mcp_control_demo.
+# Runtime control uses dynamic FK only:
+#   T_exec_camera(q) = T_base_head_pitch(q) * T_head_pitch_camera
 
-calibration_path: /home/ck/RoboClaw/src/mcp_control_demo/config/mcp_control_calibration.yaml
+mcp_control:
+  transform_mode: dynamic_fk
+  camera_frame: head_camera_optical
+  exec_frame: base_link
+
+  intrinsics:
+    camera_name: head
+    camera_model: Realsense-D455
+    image_size:
+      width: 1280
+      height: 720
+    fx: 645.2637329101562
+    fy: 644.3807373046875
+    cx: 642.1536865234375
+    cy: 362.27099609375
+    camera_matrix:
+      fx: 645.2637329101562
+      fy: 644.3807373046875
+      cx: 642.1536865234375
+      cy: 362.27099609375
+      data:
+        - [645.2637329101562, 0.0, 642.1536865234375]
+        - [0.0, 644.3807373046875, 362.27099609375]
+        - [0.0, 0.0, 1.0]
+    distortion_coefficients:
+      model: plumb bob
+      opencv_order: k1,k2,p1,p2,k3
+      data:
+        - -0.056559350341558456
+        - 0.0660494938492775
+        - -0.00021873065270483494
+        - 0.0009421679424121976
+        - -0.02106737717986107
+
+  extrinsics:
+    parent_frame: head_pitch_link
+    child_frame: head_camera_optical
+    T_head_pitch_camera:
+      - [0.01154905419417851, 0.03633581308553096, -0.9992728996798792, -0.09309730346114839]
+      - [-0.010873071465479051, -0.999275902324378, -0.03646158733116647, 0.03977041211949885]
+      - [-0.9998741899179753, 0.01128626249982923, -0.011145609658446354, -0.01592936593693035]
+      - [0.0, 0.0, 0.0, 1.0]
+
+  camera_approach_axis: [0.0, 0.0, -1.0]
+  camera_lift_axis: [0.0, -1.0, 0.0]
+  camera_place_down_axis: [0.0, 1.0, 0.0]
 
 perception:
   camera_name: head
@@ -14,18 +58,11 @@ perception:
 
 reset_on_initialize: true
 reset_pose:
-  # These fixed head/waist reset values must match
-  # src/mcp_control_demo/config/mcp_control_calibration.yaml:
-  #   extrinsics.fixed_robot_pose_for_T_exec_camera
-  #
-  # The configured T_exec_camera is pre-composed for this pose:
-  #   T_base_camera = T_base_head_pitch(reset) * T_head_pitch_camera
   target_grippers_positions: [0.0, 0.0]
   # [head_yaw_rad, head_pitch_rad]
   target_head_positions: [0.0, 0.43633230555555524]
   # [waist_pitch_rad, waist_lift_m]
   target_waist_positions: [0.8901176920412174, 0.4598677062988281]
-  # target_waist_positions: [0.40441, 0.3098677062988281]
 
 environment:
   dataloader:

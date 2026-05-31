@@ -4,7 +4,7 @@ set -euo pipefail
 COROBOT_URL="${COROBOT_URL:-http://localhost:8765}"
 ARM="${ARM:-right}"
 CAMERA_FRAME="${CAMERA_FRAME:-head_camera_optical}"
-CALIBRATION_PATH="${CALIBRATION_PATH:-/home/ck/RoboClaw/src/mcp_control_demo/config/mcp_control_calibration.yaml}"
+TASK_CONFIG_PATH="${TASK_CONFIG_PATH:-/home/ck/RoboClaw/.a2d_pkg/corobot/config/rule_control_task_config.yml}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ck/miniconda3/envs/robot/bin/python}"
 MOVE_DURATION_S="${MOVE_DURATION_S:-2.0}"
 GRIPPER_DURATION_S="${GRIPPER_DURATION_S:-0.5}"
@@ -64,7 +64,7 @@ Environment:
   SOURCE_TAG_ID           default 0, overridden by CLI source_tag_id
   DEST_TAG_ID             default 1, overridden by CLI dest_tag_id
   CAMERA_FRAME            default head_camera_optical
-  CALIBRATION_PATH        default src/mcp_control_demo/config/mcp_control_calibration.yaml
+  TASK_CONFIG_PATH        default .a2d_pkg/corobot/config/rule_control_task_config.yml
   MOVE_DURATION_S         default 2.0
   GRIPPER_DURATION_S      default 0.5
   APPROACH_DISTANCE_M     default 0.06, applied along configured camera_approach_axis
@@ -76,6 +76,10 @@ Notes:
   If only one offset is provided, it is used for both grasping the source tag
   and placing relative to the destination tag. This keeps the held object's
   tag-relative grasp geometry consistent during placement.
+  Base-link offsets in this helper are converted by dynamically composing
+  T_base_head_pitch(reset_pose) * T_head_pitch_camera from the task config.
+  Keep head/waist at reset_pose for this planning helper, or prefer direct
+  camera-frame targets.
 EOF
 }
 
@@ -99,7 +103,7 @@ if [[ $# -ne 3 && $# -ne 6 ]]; then
 fi
 
 export PYTHONPATH="/home/ck/RoboClaw/src:/home/ck/RoboClaw/.a2d_pkg:${PYTHONPATH:-}"
-export COROBOT_URL ARM CAMERA_FRAME CALIBRATION_PATH
+export COROBOT_URL ARM CAMERA_FRAME TASK_CONFIG_PATH
 export MOVE_DURATION_S GRIPPER_DURATION_S APPROACH_DISTANCE_M
 export LIFT_DZ_BASE_M PLACE_HOVER_DZ_BASE_M SOURCE_TAG_ID DEST_TAG_ID EXECUTE_PICK_PLACE
 
@@ -111,9 +115,16 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
+from scipy.spatial.transform import Rotation as R
+from corobot.utils.fk_solver import _find_urdf_solver_dir
+from corobot.utils.kinematics import Kinematics
 
 from mcp_control_demo.calibration import load_calibration_config
 
@@ -127,7 +138,7 @@ else:
 corobot_url = os.environ["COROBOT_URL"].rstrip("/")
 arm = os.environ["ARM"]
 camera_frame = os.environ["CAMERA_FRAME"]
-calibration_path = os.environ["CALIBRATION_PATH"]
+task_config_path = os.environ["TASK_CONFIG_PATH"]
 move_duration_s = float(os.environ["MOVE_DURATION_S"])
 gripper_duration_s = float(os.environ["GRIPPER_DURATION_S"])
 approach_distance_m = float(os.environ["APPROACH_DISTANCE_M"])
@@ -162,6 +173,26 @@ def rounded(values: Any) -> list[float]:
     return [round(float(v), 6) for v in np.asarray(values, dtype=np.float64).reshape(-1)]
 
 
+def calibration_from_reset_pose(path: str):
+    config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    calibration = load_calibration_config(path)
+    reset_pose = config.get("reset_pose") or {}
+    head = reset_pose.get("target_head_positions")
+    waist = reset_pose.get("target_waist_positions")
+    if head is None or waist is None:
+        raise RuntimeError("task config must contain reset_pose target_head_positions and target_waist_positions")
+    if calibration.t_head_pitch_camera is None:
+        raise RuntimeError("task config must contain mcp_control.extrinsics.T_head_pitch_camera")
+
+    with redirect_stdout(StringIO()):
+        kinematics = Kinematics(str(_find_urdf_solver_dir() / "A2D_viz.urdf"))
+    xyzquat = kinematics.compute_head_fk(float(head[0]), float(head[1]), float(waist[0]), float(waist[1]))
+    t_base_head = np.eye(4, dtype=np.float64)
+    t_base_head[:3, :3] = R.from_quat(xyzquat[3:]).as_matrix()
+    t_base_head[:3, 3] = np.asarray(xyzquat[:3], dtype=np.float64)
+    return calibration.with_t_exec_camera(t_base_head @ calibration.t_head_pitch_camera)
+
+
 def get_tag(tag_id: int) -> dict[str, Any]:
     tag = post("/skill/get_tag_pose", {"tag_id": tag_id})
     if not tag.get("ok", False):
@@ -169,7 +200,7 @@ def get_tag(tag_id: int) -> dict[str, Any]:
     return tag
 
 
-calibration = load_calibration_config(calibration_path)
+calibration = calibration_from_reset_pose(task_config_path)
 
 post("/skill/detect_tags", {})
 source_tag = get_tag(source_tag_id)

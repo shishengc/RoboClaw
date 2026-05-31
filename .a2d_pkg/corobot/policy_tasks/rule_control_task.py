@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import base64
 import time
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 from corobot.envs.g01_env import G01Env
 from corobot.policy_tasks.policy_task_base import PolicyTaskBase
@@ -13,7 +16,7 @@ from corobot.protocol.protocol_schemas import Action
 from corobot.utils.api_decorators import expose_api
 from corobot.utils.log_setting import CoLogger as logger
 
-from mcp_control_demo.calibration import CalibrationConfig, load_calibration_config
+from mcp_control_demo.calibration import CalibrationConfig
 from mcp_control_demo.control import (
     GRIPPER_CENTER_OFFSET_LINK7_M,
     build_gripper_action,
@@ -72,16 +75,13 @@ class RuleControlTask(PolicyTaskBase):
         self._perception: AprilTagPerceptionService | None = None
         self._reset_pose = _copy_reset_pose(DEFAULT_RESET_POSE)
         self._reset_on_initialize = False
+        self._kinematics = None
+        self._kinematics_urdf_path: str | None = None
 
     def initialize(self) -> bool:
         env_config = self.config.get("env_config") or self.config.get("environment") or None
         self._configure_reset()
-        calibration_path = self.config.get("calibration_path")
-        if calibration_path is None:
-            calibration_path = self.config.get("mcp_control_demo", {}).get("calibration_path")
-        if calibration_path is None:
-            raise ValueError("RuleControlTask requires calibration_path in config")
-        self._calibration = load_calibration_config(Path(calibration_path))
+        self._calibration = CalibrationConfig.from_dict(self.config)
 
         perception_cfg = self.config.get("perception") or {}
         self._perception = AprilTagPerceptionService(
@@ -125,7 +125,9 @@ class RuleControlTask(PolicyTaskBase):
             else {
                 "camera_frame": self._calibration.camera_frame,
                 "exec_frame": self._calibration.exec_frame,
-                "has_T_exec_camera": self._calibration.t_exec_camera is not None,
+                "transform_mode": self._calibration.transform_mode,
+                "can_compute_T_exec_camera": self._calibration.can_provide_transform,
+                "has_T_head_pitch_camera": self._calibration.t_head_pitch_camera is not None,
                 "has_intrinsics": self._calibration.intrinsics is not None,
             },
             "perception": None if self._perception is None else self._perception.status(),
@@ -146,7 +148,7 @@ class RuleControlTask(PolicyTaskBase):
     def get_eef_pose(self, arm: str, camera_frame: str = "head_camera_optical") -> dict[str, Any]:
         arm = _validate_arm(arm)
         obs = self._observation()
-        calibration = self._calibration_config()
+        calibration = self._calibration_for_observation(obs)
         pose_exec = _current_eef_pose(obs, arm, calibration.exec_frame)
         if pose_exec is None:
             return {
@@ -252,9 +254,10 @@ class RuleControlTask(PolicyTaskBase):
     ) -> dict[str, Any]:
         self._reject_control_frequency(control_hz, control_frequency_hz)
         obs = self._observation()
+        calibration = self._calibration_for_observation(obs)
         action, meta = build_move_eef_action(
             obs,
-            self._calibration_config(),
+            calibration,
             arm=arm,
             camera_frame=camera_frame,
             target_position_camera_m=target_position_camera_m,
@@ -277,9 +280,10 @@ class RuleControlTask(PolicyTaskBase):
     ) -> dict[str, Any]:
         self._reject_control_frequency(control_hz, control_frequency_hz)
         obs = self._observation()
+        calibration = self._calibration_for_observation(obs)
         action, meta = build_lift_eef_action(
             obs,
-            self._calibration_config(),
+            calibration,
             arm=arm,
             camera_frame=camera_frame,
             distance_m=distance_m,
@@ -301,9 +305,10 @@ class RuleControlTask(PolicyTaskBase):
     ) -> dict[str, Any]:
         self._reject_control_frequency(control_hz, control_frequency_hz)
         obs = self._observation()
+        calibration = self._calibration_for_observation(obs)
         actions, meta = build_place_down_sequence(
             obs,
-            self._calibration_config(),
+            calibration,
             arm=arm,
             camera_frame=camera_frame,
             down_distance_m=down_distance_m,
@@ -346,6 +351,60 @@ class RuleControlTask(PolicyTaskBase):
         if self._calibration is None:
             raise RuntimeError("calibration is not initialized")
         return self._calibration
+
+    def _calibration_for_observation(self, observation: Any) -> CalibrationConfig:
+        calibration = self._calibration_config()
+        if calibration.t_exec_camera is not None:
+            return calibration
+        if not calibration.has_dynamic_fk:
+            return calibration
+        return calibration.with_t_exec_camera(self._dynamic_t_exec_camera(observation, calibration))
+
+    def _dynamic_t_exec_camera(self, observation: Any, calibration: CalibrationConfig) -> np.ndarray:
+        if calibration.exec_frame != "base_link":
+            raise ValueError("dynamic_fk transform currently supports exec_frame='base_link' only")
+        if calibration.t_head_pitch_camera is None:
+            raise ValueError("dynamic_fk requires fixed T_head_pitch_camera calibration")
+
+        states = _observation_states(observation)
+        head = _float_list(_get(states, "head_joint_states"), 2)
+        waist = _float_list(_get(states, "waist_joint_states"), 2)
+        if head is None or waist is None:
+            raise ValueError("dynamic_fk requires current head_joint_states and waist_joint_states in observation")
+
+        xyzquat = self._kinematics_for_calibration(calibration).compute_head_fk(
+            float(head[0]),
+            float(head[1]),
+            float(waist[0]),
+            float(waist[1]),
+        )
+        t_base_head_pitch = np.eye(4, dtype=np.float64)
+        t_base_head_pitch[:3, :3] = R.from_quat(xyzquat[3:]).as_matrix()
+        t_base_head_pitch[:3, 3] = np.asarray(xyzquat[:3], dtype=np.float64)
+        return t_base_head_pitch @ calibration.t_head_pitch_camera
+
+    def _kinematics_for_calibration(self, calibration: CalibrationConfig):
+        urdf_path = str(self._dynamic_fk_urdf_path(calibration))
+        if self._kinematics is None or self._kinematics_urdf_path != urdf_path:
+            from corobot.utils.kinematics import Kinematics
+
+            with redirect_stdout(StringIO()):
+                self._kinematics = Kinematics(urdf_path)
+            self._kinematics_urdf_path = urdf_path
+        return self._kinematics
+
+    def _dynamic_fk_urdf_path(self, calibration: CalibrationConfig) -> Path:
+        if calibration.urdf_path is not None:
+            return self._resolve_config_path(calibration.urdf_path)
+        from corobot.utils.fk_solver import _find_urdf_solver_dir
+
+        return (_find_urdf_solver_dir() / "A2D_viz.urdf").resolve()
+
+    def _resolve_config_path(self, value: str | Path) -> Path:
+        path = Path(value).expanduser()
+        if path.is_absolute():
+            return path
+        return (Path(self.config_path).expanduser().resolve().parent / path).resolve()
 
     def _perception_service(self) -> AprilTagPerceptionService:
         if self._perception is None:
@@ -450,14 +509,18 @@ def _float_list_or_none(value: Any) -> list[float] | None:
 
 
 def _current_eef_pose(observation: Any, arm: str, frame: str) -> Any | None:
-    obs = _get(observation, "observation") or observation
-    states = _get(obs, "states")
+    states = _observation_states(observation)
     end_pose = _get(states, "end_pose")
     frame_pose = _get(end_pose, frame)
     pose = _get(frame_pose, f"{_validate_arm(arm)}_arm")
     if pose is not None:
         return pose
     return _fk_eef_pose_from_joint_states(states, arm, frame)
+
+
+def _observation_states(observation: Any) -> Any | None:
+    obs = _get(observation, "observation") or observation
+    return _get(obs, "states")
 
 
 def _fk_eef_pose_from_joint_states(states: Any, arm: str, frame: str) -> Any | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 from corobot.protocol.protocol_schemas import Action
@@ -68,15 +69,17 @@ def test_move_eef_right_arm_action_is_30hz_and_schema_valid():
 
 
 def test_camera_target_is_transformed_to_exec_frame():
-    calibration = CalibrationConfig.from_dict(
-        {
-            "T_exec_camera": [
+    calibration = CalibrationConfig(
+        t_exec_camera=np.asarray(
+            [
                 [1.0, 0.0, 0.0, 1.0],
                 [0.0, 1.0, 0.0, 2.0],
                 [0.0, 0.0, 1.0, 3.0],
                 [0.0, 0.0, 0.0, 1.0],
-            ]
-        }
+            ],
+            dtype=np.float64,
+        ),
+        t_head_pitch_camera=np.eye(4, dtype=np.float64),
     )
     action, _ = build_move_eef_action(
         _obs(),
@@ -90,24 +93,53 @@ def test_camera_target_is_transformed_to_exec_frame():
     )
 
 
-def test_calibration_can_hold_intrinsics_without_transform_for_perception_only():
+def test_dynamic_calibration_holds_intrinsics_without_runtime_transform():
     calibration = CalibrationConfig.from_dict(
         {
-            "intrinsics": {
-                "camera_matrix": {
-                    "data": [
-                        [641.6347338250084, 0.0, 652.2551428790697],
-                        [0.0, 638.6652075681625, 362.8615784851012],
-                        [0.0, 0.0, 1.0],
-                    ]
+            "mcp_control": {
+                "transform_mode": "dynamic_fk",
+                "extrinsics": {"T_head_pitch_camera": np.eye(4).tolist()},
+                "intrinsics": {
+                    "camera_matrix": {
+                        "data": [
+                            [641.6347338250084, 0.0, 652.2551428790697],
+                            [0.0, 638.6652075681625, 362.8615784851012],
+                            [0.0, 0.0, 1.0],
+                        ]
+                    }
                 }
-            }
+            },
         }
     )
     assert calibration.intrinsics is not None
     assert calibration.t_exec_camera is None
-    with pytest.raises(ValueError, match="T_exec_camera"):
+    with pytest.raises(ValueError, match="runtime T_exec_camera"):
         calibration.require_transform()
+
+
+def test_calibration_reads_merged_dynamic_fk_config():
+    calibration = CalibrationConfig.from_dict(
+        {
+            "mcp_control": {
+                "transform_mode": "dynamic_fk",
+                "camera_frame": "head_camera_optical",
+                "exec_frame": "base_link",
+                "extrinsics": {
+                    "T_head_pitch_camera": np.eye(4).tolist(),
+                },
+            }
+        }
+    )
+
+    assert calibration.has_dynamic_fk is True
+    assert calibration.can_provide_transform is True
+    assert calibration.t_head_pitch_camera is not None
+    assert calibration.t_exec_camera is None
+
+
+def test_legacy_static_calibration_is_rejected():
+    with pytest.raises(ValueError, match="mcp_control"):
+        CalibrationConfig.from_dict({"T_exec_camera": np.eye(4).tolist()})
 
 
 def test_lift_eef_uses_camera_lift_axis():
