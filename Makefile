@@ -1,13 +1,12 @@
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 LOCAL_PKG_DIR ?= $(MAKEFILE_DIR)/.a2d_pkg
 COROBOT_WHL ?= ~/corobot-1.0.0.dev0+gui.mh.2-py3-none-any.whl
-COROBOT_SITE_PACKAGES ?= /home/ck/miniconda3/envs/robot/lib/python3.10/site-packages
-COROBOT_PYTHON ?= /home/ck/miniconda3/envs/robot/bin/python
-APRILTAG_SITE_PACKAGES ?= /home/ck/miniconda3/envs/depth/lib/python3.10/site-packages
+COROBOT_PYTHON ?= $(MAKEFILE_DIR).venv/bin/python
 CAMERA_ARGS ?=
 INFER_POLICY_ARGS ?=
-DRYRUN_POLICY_ARGS ?=
 COROBOT_APP_ARGS ?=
+COROBOT_POLICY_AUTO_LOOP_ARGS ?=
+COROBOT_POLICY_PROMPT_LOOP_ARGS ?=
 ROBOCLAW_AGENT_TRACE ?= 0
 ROBOCLAW_AGENT_TRACE_DIR ?= artifacts/agent_traces
 ROBOCLAW_AGENT_TRACE_FILE ?=
@@ -19,18 +18,18 @@ METASEARCH_DIR := $(MAKEFILE_DIR)/src/mcp_server_demo/metasearch-mcp
 COROBOT_MCP_DIR := $(MAKEFILE_DIR)/src/mcp_server_demo/corobot_mcp_server
 DATA_ANALYST_MCP_DIR := $(MAKEFILE_DIR)/src/mcp_server_demo/data_analyst_mcp_server
 
-# 默认仅注入 src；本地扩展目录存在时自动加入；可选追加授权用户的 site-packages
-COROBOT_ENV_LIB := $(if $(COROBOT_SITE_PACKAGES),$(patsubst %/lib/python$(ROOT_PYTHON)/site-packages,%/lib,$(COROBOT_SITE_PACKAGES)),)
-LOCAL_CMEEL_SITE_PACKAGES := $(LOCAL_PKG_DIR)/cmeel.prefix/lib/python$(ROOT_PYTHON)/site-packages
-COROBOT_CMEEL_SITE_PACKAGES := $(if $(COROBOT_SITE_PACKAGES),$(COROBOT_SITE_PACKAGES)/cmeel.prefix/lib/python$(ROOT_PYTHON)/site-packages,)
-LOCAL_CMEEL_LIB := $(LOCAL_PKG_DIR)/cmeel.prefix/lib
-COROBOT_CMEEL_LIB := $(if $(COROBOT_SITE_PACKAGES),$(COROBOT_SITE_PACKAGES)/cmeel.prefix/lib,)
-PYTHONPATH_VALUE := $(MAKEFILE_DIR)/src$(if $(wildcard $(LOCAL_PKG_DIR)),:$(LOCAL_PKG_DIR),)$(if $(wildcard $(LOCAL_CMEEL_SITE_PACKAGES)),:$(LOCAL_CMEEL_SITE_PACKAGES),)$(if $(COROBOT_SITE_PACKAGES),:$(COROBOT_SITE_PACKAGES),)$(if $(wildcard $(APRILTAG_SITE_PACKAGES)),:$(APRILTAG_SITE_PACKAGES),)$(if $(wildcard $(COROBOT_CMEEL_SITE_PACKAGES)),:$(COROBOT_CMEEL_SITE_PACKAGES),)
+# 默认注入工作区源码和本地 .a2d_pkg 运行时。
+LOCAL_SITE_PACKAGES := $(LOCAL_PKG_DIR)/site-packages
+LOCAL_CMEEL_PREFIX := $(if $(wildcard $(LOCAL_SITE_PACKAGES)/cmeel.prefix),$(LOCAL_SITE_PACKAGES)/cmeel.prefix,$(LOCAL_PKG_DIR)/cmeel.prefix)
+LOCAL_CMEEL_SITE_PACKAGES := $(LOCAL_CMEEL_PREFIX)/lib/python$(ROOT_PYTHON)/site-packages
+LOCAL_LIB := $(LOCAL_PKG_DIR)/lib
+LOCAL_CMEEL_LIB := $(LOCAL_CMEEL_PREFIX)/lib
+LOCAL_COSINE_LIB := $(LOCAL_SITE_PACKAGES)/cosine_bus/lib
+PYTHONPATH_VALUE := $(MAKEFILE_DIR)/src$(if $(wildcard $(LOCAL_PKG_DIR)),:$(LOCAL_PKG_DIR),)$(if $(wildcard $(LOCAL_SITE_PACKAGES)),:$(LOCAL_SITE_PACKAGES),)$(if $(wildcard $(LOCAL_CMEEL_SITE_PACKAGES)),:$(LOCAL_CMEEL_SITE_PACKAGES),)
 PYENV := PYTHONPATH=$(PYTHONPATH_VALUE)
-LD_LIBRARY_VALUE := $(if $(wildcard $(COROBOT_ENV_LIB)),$(COROBOT_ENV_LIB):,)/data/opencv45$(if $(wildcard $(LOCAL_CMEEL_LIB)),:$(LOCAL_CMEEL_LIB),)$(if $(wildcard $(COROBOT_CMEEL_LIB)),:$(COROBOT_CMEEL_LIB),):$$LD_LIBRARY_PATH
+LD_LIBRARY_VALUE := $(if $(wildcard $(LOCAL_LIB)),$(LOCAL_LIB):,)$(if $(wildcard $(LOCAL_CMEEL_LIB)),$(LOCAL_CMEEL_LIB):,)$(if $(wildcard $(LOCAL_COSINE_LIB)),$(LOCAL_COSINE_LIB):,)$$LD_LIBRARY_PATH
 LD_LIBRARY := LD_LIBRARY_PATH=$(LD_LIBRARY_VALUE)
 AGENT_TRACE_ENV := ROBOCLAW_AGENT_TRACE=$(ROBOCLAW_AGENT_TRACE) ROBOCLAW_AGENT_TRACE_DIR=$(ROBOCLAW_AGENT_TRACE_DIR) ROBOCLAW_AGENT_TRACE_FILE=$(ROBOCLAW_AGENT_TRACE_FILE) ROBOCLAW_AGENT_TRACE_MAX_STRING=$(ROBOCLAW_AGENT_TRACE_MAX_STRING)
-CURRENT_TIME := $(shell date +"%Y-%m-%d_%H-%M")
 UV_RUN_ROOT := uv run --python $(ROOT_PYTHON)
 UV_RUN_COROBOT := uv run --python $(COROBOT_PYTHON)
 
@@ -74,6 +73,12 @@ run_tui_trace:
 run_corobot_app:
 	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python -m corobot.app.app $(COROBOT_APP_ARGS)
 
+run_corobot_policy_auto_loop:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_auto_loop.py $(COROBOT_POLICY_AUTO_LOOP_ARGS)
+
+run_corobot_policy_prompt_loop:
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/debug_corobot_policy_prompt_loop.py $(COROBOT_POLICY_PROMPT_LOOP_ARGS)
+
 check_corobot_runtime:
 	$(LD_LIBRARY) $(PYENV) $(COROBOT_PYTHON) -c "import sys; print(sys.executable); import cv2; print('cv2', cv2.__file__); from pupil_apriltags import Detector; print('pupil_apriltags ok'); import corobot, a2d_sdk, mcp_control_demo; from corobot.policy_tasks.rule_control_task import RuleControlTask; print('RuleControlTask ok'); print('corobot runtime ok')"
 
@@ -90,7 +95,7 @@ test_camera:
 	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_camera.py $(CAMERA_ARGS)
 
 test_infer_policy:
-	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_infer_policy.py $(INFER_POLICY_ARGS) $(DRYRUN_POLICY_ARGS)
+	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}scripts/test_infer_policy.py $(INFER_POLICY_ARGS)
 
 test_udp:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}tests/agent_demo/interaction_layer/test_udp.py

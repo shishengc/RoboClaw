@@ -19,6 +19,7 @@
 - `get_skill_status`: 获取 deterministic skill task 状态
 - `reset_robot`: 调用 deterministic skill 的安全复位，先复位夹爪，再复位双臂、头部和腰部
 - `get_eef_pose`: 读取指定左/右臂当前夹爪中心 TCP 位姿，同时返回底层 wrist/link7 位姿
+- `get_camera_views`: 读取机器人三视角相机 `head`、`hand_left`、`hand_right`，可返回单路图和拼接图 base64
 - `detect_tags`: 刷新 AprilTag 检测缓存
 - `get_apriltag_pose`: 按 `tag_id` 查询相机坐标系位姿
 - `move_eef`: 使用相机坐标系夹爪中心 TCP 目标移动左/右臂，底层仍下发 wrist/link7 轨迹
@@ -44,8 +45,9 @@
 1. `get_skill_status` 确认 CoRobot skill task、calibration 和 perception ready。
 2. 需要回到初始姿态时调用 `reset_robot`。
 3. `get_eef_pose` 可用于读取当前夹爪中心 TCP 位置并做小范围移动测试。
-4. `detect_tags` 或 `get_apriltag_pose` 获取相机坐标系目标。
-5. 通过 `open_gripper`、`move_eef`、`close_gripper`、`lift_eef` 或 `place_down` 组合执行确定性 primitive。
+4. `get_camera_views` 可用于读取三视角相机图像，供 Agent 做视觉确认。
+5. `detect_tags` 或 `get_apriltag_pose` 获取相机坐标系目标。
+6. 通过 `open_gripper`、`move_eef`、`close_gripper`、`lift_eef` 或 `place_down` 组合执行确定性 primitive。
 
 示例：
 
@@ -57,3 +59,20 @@
   "duration_s": 1.5
 }
 ```
+
+三视角相机示例：
+
+```json
+{
+  "cameras": "head,hand_left,hand_right",
+  "format": "jpg",
+  "include_images": true,
+  "concatenate": true,
+  "jpeg_quality": 85,
+  "save_images": true,
+  "save_dir": "/home/ck/RoboClaw/artifacts/test_camera"
+}
+```
+
+调用成功后，CoRobot 响应中的 `saved_images` 会包含本次保存的三路单图和
+拼接图路径。图片按日期保存到 `save_dir/YYYY-MM-DD/`，并按 RGB 通道写入。

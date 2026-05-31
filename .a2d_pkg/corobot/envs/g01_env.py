@@ -20,6 +20,79 @@ from corobot.utils.log_setting import CoLogger as logger
 from corobot.utils.yaml_utils import load_yaml
 
 
+_A2D_EMPTY_JOINT_CALLBACK_PATCHED = False
+
+
+def _patch_a2d_sdk_empty_joint_callbacks() -> None:
+    """Ignore malformed empty DDS head/waist joint frames from a2d_sdk.
+
+    Some robot DDS sessions publish empty head state frames during startup. The
+    upstream a2d_sdk callback indexes motor_states[0] and motor_states[1]
+    unconditionally, which raises repeated exceptions from the ctypes callback
+    thread. Patch before RobotDds is instantiated so subscribers receive guarded
+    callbacks.
+    """
+    global _A2D_EMPTY_JOINT_CALLBACK_PATCHED
+    if _A2D_EMPTY_JOINT_CALLBACK_PATCHED:
+        return
+
+    try:
+        from a2d_sdk.robot import RobotDds
+    except Exception as exc:
+        logger.warning(f"Could not patch a2d_sdk RobotDds callbacks: {exc}")
+        return
+
+    original_head_callback = getattr(RobotDds, "head_joint_state_callback", None)
+    original_waist_callback = getattr(RobotDds, "waist_joint_state_callback", None)
+    if original_head_callback is None or original_waist_callback is None:
+        return
+    if getattr(original_head_callback, "_corobot_empty_joint_guard", False):
+        _A2D_EMPTY_JOINT_CALLBACK_PATCHED = True
+        return
+
+    def guarded_head_joint_state_callback(self, msg):
+        motor_states = getattr(msg, "motor_states", [])
+        if len(motor_states) < 2:
+            try:
+                del self._head_joint_state.motor_states[:]
+                self._head_joint_state.motor_states.extend(motor_states)
+            except Exception:
+                pass
+            return
+        return original_head_callback(self, msg)
+
+    def guarded_waist_joint_state_callback(self, msg):
+        motor_states = getattr(msg, "motor_states", [])
+        names = getattr(msg, "name", [])
+        if len(motor_states) == 0:
+            try:
+                del self._waist_joint_state.motor_states[:]
+            except Exception:
+                pass
+            return
+        if len(names) < len(motor_states):
+            try:
+                del self._waist_joint_state.motor_states[:]
+                self._waist_joint_state.motor_states.extend(motor_states)
+                for index, state in enumerate(motor_states):
+                    name = names[index] if index < len(names) else ""
+                    if name == "joint_body_pitch":
+                        self._body_pose_joint_states[2] = state.position
+                    elif name == "joint_lift_body":
+                        self._body_pose_joint_states[3] = state.position
+                timestamp = int(msg.header.stamp.sec * 1e9 + msg.header.stamp.nanosec)
+                self._waist_buffer.write(self._body_pose_joint_states[2:4], timestamp=timestamp)
+            except Exception:
+                pass
+            return
+        return original_waist_callback(self, msg)
+
+    guarded_head_joint_state_callback._corobot_empty_joint_guard = True
+    RobotDds.head_joint_state_callback = guarded_head_joint_state_callback
+    RobotDds.waist_joint_state_callback = guarded_waist_joint_state_callback
+    _A2D_EMPTY_JOINT_CALLBACK_PATCHED = True
+
+
 class G01Env:
     def __init__(self, config: str | dict[str, Any] | None = None):
         """
@@ -41,6 +114,7 @@ class G01Env:
         self._mc_cfg = self.config.get("motion_controller", {})
         self._mc_timeout_s = float(self._mc_cfg.get("execution_timeout_s", 2.0))
 
+        _patch_a2d_sdk_empty_joint_callbacks()
         self._dataloader = DataLoaderFactory.create_data_loader(self._dl_cfg)
         # motion controller
         if self._mc_cfg.get("enabled", False):

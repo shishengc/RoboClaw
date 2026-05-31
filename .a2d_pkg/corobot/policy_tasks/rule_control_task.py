@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import time
 from pathlib import Path
 from typing import Any
@@ -213,6 +214,29 @@ class RuleControlTask(PolicyTaskBase):
         if not refresh.get("ok"):
             return refresh
         return self._perception_service().get_tag_pose(int(tag_id), allow_stale=allow_stale)
+
+    @expose_api(method="GET", path="/skill/camera_views")
+    def camera_views(
+        self,
+        cameras: str = "head,hand_left,hand_right",
+        format: str = "jpg",
+        include_images: bool = True,
+        concatenate: bool = True,
+        jpeg_quality: int = 85,
+        save_images: bool = True,
+        save_dir: str = "/home/ck/RoboClaw/artifacts/test_camera",
+    ) -> dict[str, Any]:
+        obs = self._observation()
+        return _camera_views_from_observation(
+            obs,
+            cameras=cameras,
+            image_format=format,
+            include_images=_coerce_bool(include_images),
+            concatenate=_coerce_bool(concatenate),
+            jpeg_quality=jpeg_quality,
+            save_images=_coerce_bool(save_images),
+            save_dir=save_dir,
+        )
 
     @expose_api(method="POST", path="/skill/move_eef")
     def move_eef(
@@ -476,6 +500,293 @@ def _float_list(value: Any, expected_len: int) -> list[float] | None:
     if len(result) != expected_len:
         raise ValueError(f"expected {expected_len} values, got {len(result)}")
     return result
+
+
+def _camera_views_from_observation(
+    observation: Any,
+    *,
+    cameras: str,
+    image_format: str,
+    include_images: bool,
+    concatenate: bool,
+    jpeg_quality: int,
+    save_images: bool,
+    save_dir: str,
+) -> dict[str, Any]:
+    camera_names = [name.strip() for name in cameras.split(",") if name.strip()]
+    if not camera_names:
+        raise ValueError("cameras must contain at least one camera name")
+
+    encoding = _normalize_image_format(image_format)
+    obs = _get(observation, "observation") or observation
+    images = _get(obs, "images")
+    timestamps = _get(obs, "timestamps") or {}
+
+    camera_results: dict[str, Any] = {}
+    decoded_images: dict[str, Any] = {}
+
+    for camera_name in camera_names:
+        raw_image = _get(images, camera_name)
+        image = _image_to_array(raw_image)
+        if image is None:
+            camera_results[camera_name] = {
+                "ok": False,
+                "message": f"camera {camera_name} image is unavailable",
+                "timestamp_ns": _int_or_none(_get(timestamps, camera_name)),
+            }
+            continue
+
+        decoded_images[camera_name] = image
+        camera_payload = {
+            "ok": True,
+            "timestamp_ns": _int_or_none(_get(timestamps, camera_name)),
+            "shape": [int(value) for value in image.shape],
+            "height": int(image.shape[0]),
+            "width": int(image.shape[1]) if image.ndim >= 2 else None,
+            "channels": int(image.shape[2]) if image.ndim >= 3 else 1,
+            "encoding": encoding,
+        }
+        if include_images:
+            camera_payload["image_base64"] = _encode_image_base64(image, encoding, jpeg_quality)
+        camera_results[camera_name] = camera_payload
+
+    result: dict[str, Any] = {
+        "ok": bool(decoded_images),
+        "complete": len(decoded_images) == len(camera_names),
+        "requested_cameras": camera_names,
+        "available_cameras": list(decoded_images.keys()),
+        "missing_cameras": [name for name in camera_names if name not in decoded_images],
+        "image_format": encoding,
+        "include_images": include_images,
+        "cameras": camera_results,
+    }
+
+    concatenated = _concatenate_images(decoded_images, camera_names) if (concatenate or save_images) else None
+    if concatenate:
+        if concatenated is None:
+            result["concatenated"] = {
+                "ok": False,
+                "message": "not enough camera images are available to concatenate",
+                "order": [name for name in camera_names if name in decoded_images],
+            }
+        else:
+            concat_payload = {
+                "ok": True,
+                "order": [name for name in camera_names if name in decoded_images],
+                "shape": [int(value) for value in concatenated.shape],
+                "height": int(concatenated.shape[0]),
+                "width": int(concatenated.shape[1]),
+                "channels": int(concatenated.shape[2]) if concatenated.ndim >= 3 else 1,
+                "encoding": encoding,
+            }
+            if include_images:
+                concat_payload["image_base64"] = _encode_image_base64(concatenated, encoding, jpeg_quality)
+            result["concatenated"] = concat_payload
+
+    if save_images:
+        result["saved_images"] = _save_camera_view_images(
+            decoded_images,
+            concatenated,
+            camera_names,
+            encoding=encoding,
+            save_dir=save_dir,
+            jpeg_quality=jpeg_quality,
+        )
+
+    return result
+
+
+def _normalize_image_format(image_format: str) -> str:
+    normalized = (image_format or "jpg").strip().lower()
+    if normalized == "jpeg":
+        normalized = "jpg"
+    if normalized not in {"jpg", "png"}:
+        raise ValueError("format must be 'jpg', 'jpeg', or 'png'")
+    return normalized
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return bool(value)
+
+
+def _image_to_array(raw_image: Any):
+    if isinstance(raw_image, list):
+        raw_image = raw_image[0] if raw_image else None
+    if raw_image is None:
+        return None
+
+    if isinstance(raw_image, dict):
+        from corobot.utils.packet_convert import dict_to_image
+
+        return dict_to_image(raw_image)
+
+    try:
+        image = np.asarray(raw_image)
+    except Exception:
+        return None
+    if image.size == 0 or image.ndim < 2:
+        return None
+    return image
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _encode_image_base64(image: Any, encoding: str, jpeg_quality: int) -> str:
+    import cv2
+
+    encode_target = _rgb_to_cv2_image(_to_rgb_image(image))
+    ext = ".jpg" if encoding == "jpg" else ".png"
+    params = []
+    if encoding == "jpg":
+        quality = max(1, min(int(jpeg_quality), 100))
+        params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    ok, buffer = cv2.imencode(ext, encode_target, params)
+    if not ok:
+        raise RuntimeError(f"failed to encode image as {encoding}")
+    return base64.b64encode(buffer.tobytes()).decode("ascii")
+
+
+def _to_uint8_image(image: Any):
+    image_array = np.asarray(image)
+    if image_array.dtype == np.uint8:
+        return image_array
+    if np.issubdtype(image_array.dtype, np.integer):
+        max_value = float(np.iinfo(image_array.dtype).max)
+        if max_value <= 0:
+            return image_array.astype(np.uint8)
+        return np.clip((image_array.astype(np.float64) / max_value) * 255.0, 0, 255).astype(np.uint8)
+    return np.clip(image_array, 0, 255).astype(np.uint8)
+
+
+def _concatenate_images(images: dict[str, Any], camera_names: list[str]):
+    import cv2
+
+    ordered = [_to_color_image(images[name]) for name in camera_names if name in images]
+    if not ordered:
+        return None
+    if len(ordered) == 1:
+        return ordered[0]
+
+    min_height = min(image.shape[0] for image in ordered)
+    resized = []
+    for image in ordered:
+        height, width = image.shape[:2]
+        if height != min_height:
+            next_width = max(1, int(width * (min_height / height)))
+            image = cv2.resize(image, (next_width, min_height))
+        resized.append(image)
+    return cv2.hconcat(resized)
+
+
+def _save_camera_view_images(
+    images: dict[str, Any],
+    concatenated: Any | None,
+    camera_names: list[str],
+    *,
+    encoding: str,
+    save_dir: str,
+    jpeg_quality: int,
+) -> dict[str, Any]:
+    now = time.time()
+    date_text = time.strftime("%Y-%m-%d", time.localtime(now))
+    target_root = Path(save_dir).expanduser()
+    target_dir = target_root / date_text
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = f"{time.strftime('%H%M%S', time.localtime(now))}_{int((now % 1) * 1000):03d}"
+    saved: dict[str, str] = {}
+    errors: dict[str, str] = {}
+
+    for camera_name in camera_names:
+        if camera_name not in images:
+            continue
+        path = target_dir / f"camera_views_{stamp}_{camera_name}.{encoding}"
+        try:
+            _write_image_file(path, images[camera_name], encoding, jpeg_quality)
+            saved[camera_name] = str(path)
+        except Exception as exc:
+            errors[camera_name] = str(exc)
+
+    concatenated_path = None
+    if concatenated is not None:
+        path = target_dir / f"camera_views_{stamp}_three_views.{encoding}"
+        try:
+            _write_image_file(path, concatenated, encoding, jpeg_quality)
+            concatenated_path = str(path)
+        except Exception as exc:
+            errors["three_views"] = str(exc)
+
+    return {
+        "ok": bool(saved) or concatenated_path is not None,
+        "save_dir": str(target_root),
+        "date_dir": str(target_dir),
+        "color_order": "RGB",
+        "timestamp": stamp,
+        "cameras": saved,
+        "concatenated": concatenated_path,
+        "errors": errors,
+    }
+
+
+def _write_image_file(path: Path, image: Any, encoding: str, jpeg_quality: int) -> None:
+    import cv2
+
+    image_array = _rgb_to_cv2_image(_to_rgb_image(image))
+    params = []
+    if encoding == "jpg":
+        params = [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(int(jpeg_quality), 100))]
+    if not cv2.imwrite(str(path), image_array, params):
+        raise RuntimeError(f"failed to write image file: {path}")
+
+
+def _to_rgb_image(image: Any):
+    import cv2
+
+    image_array = _to_uint8_image(image)
+    if image_array.ndim == 2:
+        return cv2.cvtColor(image_array, cv2.COLOR_GRAY2RGB)
+    if image_array.ndim == 3 and image_array.shape[2] == 1:
+        return cv2.cvtColor(image_array[:, :, 0], cv2.COLOR_GRAY2RGB)
+    if image_array.ndim == 3 and image_array.shape[2] in {3, 4}:
+        # CoRobot observations are consumed as RGB by policy/perception code.
+        # Keep that convention internally; only convert for OpenCV at encode/write time.
+        return image_array
+    return image_array
+
+
+def _rgb_to_cv2_image(image: Any):
+    import cv2
+
+    image_array = _to_uint8_image(image)
+    if image_array.ndim == 3 and image_array.shape[2] == 3:
+        return cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+    if image_array.ndim == 3 and image_array.shape[2] == 4:
+        return cv2.cvtColor(image_array, cv2.COLOR_RGBA2BGRA)
+    return image_array
+
+
+def _to_color_image(image: Any):
+    import cv2
+
+    image_array = _to_uint8_image(image)
+    if image_array.ndim == 2:
+        return cv2.cvtColor(image_array, cv2.COLOR_GRAY2RGB)
+    if image_array.ndim == 3 and image_array.shape[2] == 1:
+        return cv2.cvtColor(image_array[:, :, 0], cv2.COLOR_GRAY2RGB)
+    if image_array.ndim == 3 and image_array.shape[2] == 4:
+        return cv2.cvtColor(image_array, cv2.COLOR_RGBA2RGB)
+    return image_array
 
 
 def _get(obj: Any, key: str) -> Any:

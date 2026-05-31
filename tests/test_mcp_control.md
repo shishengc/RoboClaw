@@ -21,7 +21,9 @@ cd /home/ck/RoboClaw
 
 - 保持已有 `/skill/...` HTTP API 不变。
 - 新增 `/skill/get_eef_pose`，用于读取当前左/右臂 EEF 位姿。
+- 新增 `GET /skill/camera_views`，用于读取机器人三视角相机 `head`、`hand_left`、`hand_right`，并可返回拼接图 base64。
 - MCP tool schema 同步新增 `get_eef_pose`。
+- MCP tool schema 同步新增 `get_camera_views`，Agent 可直接获取三视角图像。
 - 没有保留 `move_eef_delta_exec`；小步移动仍通过 `move_eef` 和用户提供的 calibration 完成。
 
 测试辅助：
@@ -141,6 +143,10 @@ T_exec_camera:
 make check_corobot_runtime
 ```
 
+CoRobot 相关 `make` 目标使用工作区 `.venv/bin/python` 启动；底层机器人 SDK、
+`pupil_apriltags` 和 `cosine_bus` 都从本地 `.a2d_pkg/site-packages` 注入。
+`Makefile` 不再额外注入 conda robot/depth 环境的 `site-packages`。
+
 期望包含：
 
 ```text
@@ -177,6 +183,7 @@ assert {s["name"] for s in MCP_CONTROL_TOOL_SCHEMAS} >= {
     "get_skill_status",
     "reset_robot",
     "get_eef_pose",
+    "get_camera_views",
     "detect_tags",
     "get_apriltag_pose",
     "move_eef",
@@ -192,7 +199,7 @@ PY
 期望：
 
 ```text
-10 schemas ok
+11 schemas ok
 ```
 
 如果环境有 `pytest`，可运行：
@@ -239,6 +246,78 @@ curl -sS http://localhost:8765/skill/status | python3 -m json.tool
 - `calibration.has_T_exec_camera: true`
 
 如果 `has_T_exec_camera=false`，说明当前加载的 calibration 里 `T_exec_camera` 仍是 `null`，或改完文件后没有重启 CoRobot app。
+
+## 3.1 三视角相机 GET 测试
+
+`RuleControlTask` 提供三视角相机读取接口：
+
+```text
+GET /skill/camera_views
+```
+
+默认读取：
+
+```text
+head,hand_left,hand_right
+```
+
+接口会保持 JSON 返回，同时默认把三路单图和拼接图保存到：
+
+```text
+/home/ck/RoboClaw/artifacts/test_camera/YYYY-MM-DD/
+```
+
+保存图片会按 RGB 通道写入；响应里的 `data.saved_images.color_order` 应为 `RGB`。
+
+直接检查元数据，不返回 base64 图像，但仍保存图片：
+
+```bash
+curl -sS "http://localhost:8765/skill/camera_views?include_images=false" \
+  | python3 -m json.tool
+```
+
+期望：
+
+- `success: true`
+- `data.ok: true`
+- `data.complete: true`
+- `data.requested_cameras: ["head", "hand_left", "hand_right"]`
+- `data.cameras.head.shape`
+- `data.cameras.hand_left.shape`
+- `data.cameras.hand_right.shape`
+- `data.saved_images.cameras.head`
+- `data.saved_images.concatenated`
+- `data.saved_images.date_dir`
+- `data.saved_images.color_order: RGB`
+
+返回三路图像和拼接图 base64：
+
+```bash
+curl -sS "http://localhost:8765/skill/camera_views?format=jpg&jpeg_quality=85&include_images=true&concatenate=true" \
+  > /tmp/camera_views.json
+python3 -m json.tool /tmp/camera_views.json >/dev/null
+```
+
+如果只想获取某一路相机：
+
+```bash
+curl -sS "http://localhost:8765/skill/camera_views?cameras=head&include_images=false" \
+  | python3 -m json.tool
+```
+
+返回字段说明：
+
+- `data.cameras.<name>.image_base64`: 单路相机图像，`format=jpg/png`。
+- `data.concatenated.image_base64`: 按 `head,hand_left,hand_right` 请求顺序拼接后的图像。
+- `data.saved_images`: 本次请求落盘的图像路径。
+- `data.complete=false` 表示至少一路相机当前没有取到图像，先检查 CoRobot app 日志中的相机超时信息。
+
+如果只想返回 JSON，不保存图片：
+
+```bash
+curl -sS "http://localhost:8765/skill/camera_views?save_images=false&include_images=false" \
+  | python3 -m json.tool
+```
 
 ## 4. 复位测试
 
@@ -556,6 +635,7 @@ tool list 应包含：
 get_skill_status
 reset_robot
 get_eef_pose
+get_camera_views
 detect_tags
 get_apriltag_pose
 move_eef
@@ -575,6 +655,34 @@ MCP 调用 `move_eef` 示例：
     "camera_frame": "head_camera_optical",
     "target_position_camera_m": [0.58, -0.33, 0.74],
     "duration_s": 2.0
+  }
+}
+```
+
+MCP 调用 `get_camera_views` 示例，返回三视角相机图像 base64：
+
+```json
+{
+  "name": "get_camera_views",
+  "arguments": {
+    "cameras": "head,hand_left,hand_right",
+    "format": "jpg",
+    "include_images": true,
+    "concatenate": true,
+    "jpeg_quality": 85,
+    "save_images": true,
+    "save_dir": "/home/ck/RoboClaw/artifacts/test_camera"
+  }
+}
+```
+
+如果 Agent 只需要确认相机是否可用，可以先关闭图像内容：
+
+```json
+{
+  "name": "get_camera_views",
+  "arguments": {
+    "include_images": false
   }
 }
 ```

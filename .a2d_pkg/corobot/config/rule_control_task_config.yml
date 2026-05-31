@@ -25,6 +25,7 @@ reset_pose:
   target_head_positions: [0.0, 0.43633230555555524]
   # [waist_pitch_rad, waist_lift_m]
   target_waist_positions: [0.8901176920412174, 0.4598677062988281]
+  # target_waist_positions: [0.40441, 0.3098677062988281]
 
 environment:
   dataloader:

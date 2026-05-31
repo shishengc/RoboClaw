@@ -26,6 +26,7 @@ SKILL_TOOL_ENDPOINTS = {
     "get_skill_status": ("GET", "/skill/status"),
     "reset_robot": ("POST", "/skill/reset_robot"),
     "get_eef_pose": ("POST", "/skill/get_eef_pose"),
+    "get_camera_views": ("GET", "/skill/camera_views"),
     "detect_tags": ("POST", "/skill/detect_tags"),
     "get_apriltag_pose": ("POST", "/skill/get_tag_pose"),
     "move_eef": ("POST", "/skill/move_eef"),
@@ -187,6 +188,31 @@ def _mcp_control_tools() -> list[types.Tool]:
                 "properties": {
                     "arm": {"type": "string", "enum": ["left", "right"]},
                     "camera_frame": {"type": "string", "default": "head_camera_optical"},
+                },
+            },
+        ),
+        types.Tool(
+            name="get_camera_views",
+            description="读取机器人三视角相机图像，默认返回 head、hand_left、hand_right 及拼接图的 base64。",
+            inputSchema={
+                "type": "object",
+                "required": [],
+                "properties": {
+                    "cameras": {
+                        "type": "string",
+                        "default": "head,hand_left,hand_right",
+                        "description": "逗号分隔的相机名，默认三视角 head,hand_left,hand_right。",
+                    },
+                    "format": {"type": "string", "enum": ["jpg", "jpeg", "png"], "default": "jpg"},
+                    "include_images": {"type": "boolean", "default": True},
+                    "concatenate": {"type": "boolean", "default": True},
+                    "jpeg_quality": {"type": "integer", "minimum": 1, "maximum": 100, "default": 85},
+                    "save_images": {"type": "boolean", "default": True},
+                    "save_dir": {
+                        "type": "string",
+                        "default": "/home/ck/RoboClaw/artifacts/test_camera",
+                        "description": "保存三视角图片的目录。",
+                    },
                 },
             },
         ),
@@ -426,7 +452,13 @@ async def call_skill_tool(result: list[types.TextContent], name: str, arguments:
         result.append(types.TextContent(type="text", text="错误: 控制频率固定为 30Hz，不能通过工具参数覆盖"))
         return
     url = f"{corobot_base_url}{path}"
-    await send_request_to_corobot(result, url, method, payload if method != "GET" else None)
+    await send_request_to_corobot(
+        result,
+        url,
+        method,
+        json_data=payload if method != "GET" else None,
+        query_params=payload if method == "GET" else None,
+    )
 
 
 # 给CoRobot发HTTP请求
@@ -435,6 +467,7 @@ async def send_request_to_corobot(
     url: str,
     method: str = "POST",
     json_data: dict | None = None,
+    query_params: dict | None = None,
 ) -> bool:
     """
     发送HTTP请求到CoRobot
@@ -446,7 +479,7 @@ async def send_request_to_corobot(
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             if method == "GET":
-                response_data: Response = await client.get(url, headers=headers)
+                response_data: Response = await client.get(url, headers=headers, params=query_params)
             else:
                 response_data: Response = await client.post(url, headers=headers, json=json_data)
 

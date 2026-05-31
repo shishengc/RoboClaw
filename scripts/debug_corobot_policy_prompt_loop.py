@@ -5,15 +5,21 @@ import sys
 from pathlib import Path
 
 from corobot.envs.g01_env import G01Env
+from corobot.protocol.protocol_schemas import Action
 from corobot.utils.dds_setting import dds_env_set
 
 from debug_corobot_policy_auto_loop import (
-    DEFAULT_PROMPT,
+    _model_dump,
+    close_env_safely,
+    create_run_action_log,
     execute_inferred_chunk,
     read_prompt_file,
-    reset_robot_pose,
+    reset_robot_pose_safely,
+    trajectory_len,
     _make_env_config,
 )
+
+DEFAULT_PROMPT = "Pull open the drawer"
 
 
 def _format_prompt(prompt: str, limit: int = 120) -> str:
@@ -63,6 +69,44 @@ def _prompt_for_next_chunk(current_prompt: str) -> tuple[str, bool]:
             print("Prompt unchanged.")
             continue
         return next_prompt, True
+ 
+
+def _force_gripper_closed(action: Action, side: str) -> Action:
+    horizon = trajectory_len(action)
+    if horizon <= 0:
+        raise RuntimeError("Cannot force gripper: returned action has no trajectory steps.")
+
+    data = _model_dump(action)
+    data[f"{side}_effector"] = [[1.0] for _ in range(horizon)]
+    return Action(**data)
+
+
+def _prompt_gripper_override(action: Action) -> Action:
+    while True:
+        try:
+            answer = input(
+                "Returned action ready. Press Enter to execute unchanged, "
+                "or type left/right to force that gripper closed: "
+            ).strip().lower()
+        except EOFError:
+            print("No gripper override provided; executing unchanged action.")
+            return action
+
+        if answer == "":
+            print("No gripper override selected; executing unchanged action.")
+            return action
+
+        if answer in {"left", "l"}:
+            side = "left"
+            break
+        if answer in {"right", "r"}:
+            side = "right"
+            break
+        print("Please type left or right.")
+
+    modified_action = _force_gripper_closed(action, side)
+    print(f"Forced {side} gripper to 1.0 for {trajectory_len(modified_action)} step(s).")
+    return modified_action
 
 
 def main() -> int:
@@ -92,10 +136,11 @@ def main() -> int:
 
     dds_env_set()
     save_dir = Path(args.save_dir)
+    run_log_path = create_run_action_log(save_dir, "prompt_loop", args, args.prompt)
     env: G01Env | None = None
     prompt = args.prompt
     chunk_index = 0
-    motion_started = False
+    executed_any = False
 
     try:
         env = G01Env(_make_env_config(enable_cameras=True))
@@ -117,31 +162,28 @@ def main() -> int:
                 prompt=prompt,
                 chunk_index=chunk_index,
                 save_dir=save_dir,
+                run_log_path=run_log_path,
+                action_modifier=_prompt_gripper_override,
             )
-            motion_started = True
             print(f"Executed chunk {chunk_index}: {executed_steps} step(s).")
+            executed_any = True
             chunk_index += 1
 
+        if executed_any and not args.no_reset_on_interrupt:
+            reset_robot_pose_safely(env, reason="normal exit")
         return 0
     except KeyboardInterrupt:
         print("\nStopped by user.")
-        if env is not None and motion_started and not args.no_reset_on_interrupt:
-            reset_robot_pose(env)
+        if not args.no_reset_on_interrupt:
+            reset_robot_pose_safely(env, reason="interrupt")
         return 130
     except Exception as exc:
         print(f"Prompt loop failed: {exc}", file=sys.stderr)
-        if env is not None and motion_started and not args.no_reset_on_interrupt:
-            try:
-                reset_robot_pose(env)
-            except Exception as reset_exc:
-                print(f"Reset after failure failed: {reset_exc}", file=sys.stderr)
+        if not args.no_reset_on_interrupt:
+            reset_robot_pose_safely(env, reason="failure")
         return 1
     finally:
-        if env is not None:
-            try:
-                env.close()
-            except Exception as exc:
-                print(f"Warning: failed to close env: {exc}", file=sys.stderr)
+        close_env_safely(env)
 
 
 if __name__ == "__main__":

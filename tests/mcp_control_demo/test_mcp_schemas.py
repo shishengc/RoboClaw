@@ -23,6 +23,7 @@ def test_expected_primitive_tools_are_present():
         "get_skill_status",
         "reset_robot",
         "get_eef_pose",
+        "get_camera_views",
         "detect_tags",
         "get_apriltag_pose",
         "move_eef",

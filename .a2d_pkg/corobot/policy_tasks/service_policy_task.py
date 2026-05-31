@@ -206,6 +206,7 @@ class ServicePolicyTask(PolicyTaskBase):
 
         arm_reset_pose = dict(init_pose)
         arm_reset_pose["target_grippers_positions"] = None
+        print(f"重置机器人姿态: {arm_reset_pose}")
         self._env.reset(**arm_reset_pose)
 
     def _reset_grippers_pose(self, target_grippers_positions: list[float] | None):

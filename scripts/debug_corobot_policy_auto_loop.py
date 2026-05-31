@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from websockets.sync.client import connect
 
@@ -15,7 +16,8 @@ from corobot.transport import msgpack_numpy
 from corobot.utils.dds_setting import dds_env_set
 
 
-DEFAULT_PROMPT = "Grasp the target object on the desktop."
+DEFAULT_PROMPT = "Pull open the drawer"
+LATEST_ACTION_FILENAME = "latest_action.json"
 
 
 def _json_safe(value: Any) -> Any:
@@ -67,27 +69,36 @@ def _make_env_config(enable_cameras: bool = True) -> dict[str, Any]:
     }
 
 
+def close_env_safely(env: G01Env | None) -> None:
+    if env is None:
+        return
+    try:
+        env.close()
+    except Exception as exc:
+        print(f"Warning: failed to close env: {exc}", file=sys.stderr)
+
+
 def _default_reset_pose() -> dict[str, Any]:
     return {
         "target_grippers_positions": [0.0, 0.0],
         "target_arm_joint_positions": [
-            -0.7776767611503601,
-            0.6110292077064514,
-            0.0,
-            -1.2839710712432861,
-            0.7304046154022217,
-            1.4953951835632324,
-            -0.18760496377944946,
-            0.7775720357894897,
-            -0.6110292077064514,
-            0.0,
-            1.284005880355835,
-            -0.7304570078849792,
-            -1.4953428506851196,
-            0.18762239813804626,
+            -1.072617, 
+            0.609581, 
+            0.279060, 
+            -1.281563,
+            0.729096, 
+            1.492464, 
+            -0.187081,
+            1.074292, 
+            -0.611099, 
+            -0.279601,
+            1.283866, 
+            -0.730509, 
+            -1.495465, 
+            0.187605,
         ],
         "target_head_positions": [0.0, 0.43633230555555524],
-        "target_waist_positions": [0.8901176920412174, 0.4598677062988281],
+        "target_waist_positions": [0.40441, 0.3098677062988281],
     }
 
 
@@ -109,6 +120,37 @@ def reset_robot_pose(env: G01Env) -> None:
     arm_reset_pose["target_grippers_positions"] = None
     print("Resetting robot pose...")
     env.reset(**arm_reset_pose)
+
+
+def reset_robot_pose_safely(
+    env: G01Env | None,
+    *,
+    reason: str = "interrupt",
+) -> bool:
+    if env is None:
+        print(f"Skip reset after {reason}: env is not available.", file=sys.stderr)
+        return False
+
+    print(f"Resetting robot after {reason}; temporary Ctrl+C is ignored until reset finishes.")
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except ValueError:
+        previous_sigint = None
+
+    try:
+        reset_robot_pose(env)
+        print("Reset finished.")
+        return True
+    except Exception as exc:
+        print(f"Reset after {reason} failed: {exc}", file=sys.stderr)
+        return False
+    finally:
+        if previous_sigint is not None:
+            try:
+                signal.signal(signal.SIGINT, previous_sigint)
+            except ValueError:
+                pass
 
 
 def _observation_ready(payload: Any) -> tuple[bool, str]:
@@ -257,17 +299,77 @@ def print_action_summary(action: Action, label: str = "Action") -> None:
     print(f"  right_effector: steps={len(right_effector)}, dim={len(right_effector[0]) if right_effector else 0}")
 
 
-def save_action(action: Action, save_dir: Path, chunk_index: int, suffix: str) -> None:
-    save_dir.mkdir(parents=True, exist_ok=True)
-    path = save_dir / f"chunk_{chunk_index:04d}_{suffix}.json"
-    path.write_text(json.dumps(_json_safe(_model_dump(action)), ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Saved {suffix} action to {path}")
+def _local_time_string(timestamp_s: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(timestamp_s))
 
 
-def save_prompt(prompt: str, save_dir: Path, chunk_index: int) -> None:
+def _file_time_string(timestamp_s: float) -> str:
+    return time.strftime("%Y%m%d_%H%M%S", time.localtime(timestamp_s))
+
+
+def create_run_action_log(save_dir: Path, script_name: str, args: argparse.Namespace, initial_prompt: str) -> Path:
     save_dir.mkdir(parents=True, exist_ok=True)
-    path = save_dir / f"chunk_{chunk_index:04d}_prompt.txt"
-    path.write_text(prompt + "\n", encoding="utf-8")
+    started_at_s = time.time()
+    run_log_path = save_dir / f"{script_name}_actions_{_file_time_string(started_at_s)}.json"
+    payload = {
+        "script_name": script_name,
+        "started_at": _local_time_string(started_at_s),
+        "started_at_s": started_at_s,
+        "initial_prompt": initial_prompt,
+        "latest_action_path": str(save_dir / LATEST_ACTION_FILENAME),
+        "args": _json_safe(vars(args)),
+        "chunks": [],
+    }
+    run_log_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Run action log: {run_log_path}")
+    print(f"Latest action log: {save_dir / LATEST_ACTION_FILENAME}")
+    return run_log_path
+
+
+def save_action_logs(
+    *,
+    save_dir: Path,
+    run_log_path: Path,
+    chunk_index: int,
+    prompt: str,
+    action: Action,
+    horizon_steps: int,
+    executed_steps: int,
+    inference_elapsed_ms: float,
+) -> None:
+    timestamp_s = time.time()
+    action_record = {
+        "chunk_index": chunk_index,
+        "executed_at": _local_time_string(timestamp_s),
+        "executed_at_s": timestamp_s,
+        "prompt": prompt,
+        "inference_elapsed_ms": inference_elapsed_ms,
+        "horizon_steps": horizon_steps,
+        "executed_steps": executed_steps,
+        "action": _json_safe(_model_dump(action)),
+    }
+
+    latest_path = save_dir / LATEST_ACTION_FILENAME
+    latest_payload = {
+        "updated_at": action_record["executed_at"],
+        "updated_at_s": action_record["executed_at_s"],
+        "source_run_log": str(run_log_path),
+        **action_record,
+    }
+    latest_path.write_text(json.dumps(latest_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if run_log_path.exists():
+        run_payload = json.loads(run_log_path.read_text(encoding="utf-8"))
+    else:
+        run_payload = {"chunks": []}
+    run_payload.setdefault("chunks", []).append(action_record)
+    run_payload["updated_at"] = action_record["executed_at"]
+    run_payload["updated_at_s"] = action_record["executed_at_s"]
+    run_payload["latest_chunk_index"] = chunk_index
+    run_log_path.write_text(json.dumps(run_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"Saved latest returned action to {latest_path}")
+    print(f"Appended returned action chunk to {run_log_path}")
 
 
 def _shape(value: Any) -> str:
@@ -306,24 +408,36 @@ def execute_inferred_chunk(
     prompt: str,
     chunk_index: int,
     save_dir: Path,
+    run_log_path: Path,
+    action_modifier: Callable[[Action], Action] | None = None,
 ) -> int:
     print(f"\n=== Inference/execution chunk {chunk_index} ===")
     print(f"Prompt: {prompt!r}")
     payload = read_ready_model_input(env, args.attempts, args.interval)
     payload.prompt = prompt
     print_observation_summary(payload)
-    save_prompt(prompt, save_dir, chunk_index)
 
     action, _metadata, elapsed_ms = infer_once(payload, args)
     print(f"Inference round trip: {elapsed_ms:.1f} ms")
     print_action_summary(action, "Returned action")
-    save_action(action, save_dir, chunk_index, "returned")
+    if action_modifier is not None:
+        action = action_modifier(action)
+        print_action_summary(action, "Modified returned action")
 
     horizon = trajectory_len(action)
     end = min(args.steps_per_chunk, horizon)
     chunk_action = slice_action(action, 0, end)
     print_action_summary(chunk_action, "Executing chunk")
-    save_action(chunk_action, save_dir, chunk_index, "executed")
+    save_action_logs(
+        save_dir=save_dir,
+        run_log_path=run_log_path,
+        chunk_index=chunk_index,
+        prompt=prompt,
+        action=action,
+        horizon_steps=horizon,
+        executed_steps=end,
+        inference_elapsed_ms=elapsed_ms,
+    )
 
     env.execute_action(chunk_action, wait_action_time=chunk_action.trajectory_reference_time)
     return end
@@ -357,11 +471,12 @@ def main() -> int:
 
     dds_env_set()
     save_dir = Path(args.save_dir)
+    run_log_path = create_run_action_log(save_dir, "auto_loop", args, args.prompt)
     env: G01Env | None = None
     prompt = args.prompt
     chunk_index = 0
     round_chunk_count = 0
-    motion_started = False
+    executed_any = False
 
     try:
         env = G01Env(_make_env_config(enable_cameras=True))
@@ -379,39 +494,36 @@ def main() -> int:
                 prompt=prompt,
                 chunk_index=chunk_index,
                 save_dir=save_dir,
+                run_log_path=run_log_path,
             )
-            motion_started = True
             print(f"Executed chunk {chunk_index}: {executed_steps} step(s).")
+            executed_any = True
             chunk_index += 1
             round_chunk_count += 1
 
             if round_chunk_count >= args.chunks_per_round:
                 print(f"\n=== Completed {round_chunk_count} chunk(s); resetting for next round ===")
-                reset_robot_pose(env)
+                if not reset_robot_pose_safely(env, reason="round"):
+                    raise RuntimeError("robot reset failed")
                 if args.reset_pause > 0:
                     time.sleep(args.reset_pause)
                 round_chunk_count = 0
 
+        if executed_any and not args.no_reset_on_interrupt:
+            reset_robot_pose_safely(env, reason="normal exit")
         return 0
     except KeyboardInterrupt:
         print("\nStopped by user.")
-        if env is not None and motion_started and not args.no_reset_on_interrupt:
-            reset_robot_pose(env)
+        if not args.no_reset_on_interrupt:
+            reset_robot_pose_safely(env, reason="interrupt")
         return 130
     except Exception as exc:
         print(f"Auto loop failed: {exc}", file=sys.stderr)
-        if env is not None and motion_started and not args.no_reset_on_interrupt:
-            try:
-                reset_robot_pose(env)
-            except Exception as reset_exc:
-                print(f"Reset after failure failed: {reset_exc}", file=sys.stderr)
+        if not args.no_reset_on_interrupt:
+            reset_robot_pose_safely(env, reason="failure")
         return 1
     finally:
-        if env is not None:
-            try:
-                env.close()
-            except Exception as exc:
-                print(f"Warning: failed to close env: {exc}", file=sys.stderr)
+        close_env_safely(env)
 
 
 if __name__ == "__main__":

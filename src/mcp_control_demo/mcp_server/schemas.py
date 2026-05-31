@@ -22,6 +22,31 @@ MCP_CONTROL_TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_camera_views",
+        "description": "读取机器人三视角相机图像，默认返回 head、hand_left、hand_right 及拼接图的 base64。",
+        "inputSchema": {
+            "type": "object",
+            "required": [],
+            "properties": {
+                "cameras": {
+                    "type": "string",
+                    "default": "head,hand_left,hand_right",
+                    "description": "逗号分隔的相机名，默认三视角 head,hand_left,hand_right。",
+                },
+                "format": {"type": "string", "enum": ["jpg", "jpeg", "png"], "default": "jpg"},
+                "include_images": {"type": "boolean", "default": True},
+                "concatenate": {"type": "boolean", "default": True},
+                "jpeg_quality": {"type": "integer", "minimum": 1, "maximum": 100, "default": 85},
+                "save_images": {"type": "boolean", "default": True},
+                "save_dir": {
+                    "type": "string",
+                    "default": "/home/ck/RoboClaw/artifacts/test_camera",
+                    "description": "保存三视角图片的目录。",
+                },
+            },
+        },
+    },
+    {
         "name": "detect_tags",
         "description": "从 CoRobot 当前 observation 刷新 AprilTag 检测缓存。",
         "inputSchema": {"type": "object", "required": [], "properties": {}},

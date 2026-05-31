@@ -40,7 +40,16 @@ Example dry-run:
 
 Execute on robot:
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    0 2 0.00 0.00 -0.07 -0.01 -0.02 0.02
+    0 1 0.00 0.00 -0.045 0.0 -0.0015 0.02
+
+  ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+    2 3 0.00 0.00 -0.06 0 0 0.13
+
+  ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+    0 4 0.00 0.00 -0.06 0 0 0.13
+
+  ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+    10 11 0.00 0.00 -0.03 0.02 -0.02 0.08
 
 Behavior:
   1. Detect AprilTags.
