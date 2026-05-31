@@ -8,6 +8,7 @@ from scipy.spatial.transform import Rotation as R
 
 from mcp_control_demo.calibration import CalibrationConfig, transform_orientation_xyzw
 
+from .joint_units import normalize_head_joint_states_rad
 from .timing import TrajectoryTiming, make_timing
 
 
@@ -349,9 +350,10 @@ def _fk_eef_pose_from_joint_states(states: Any, arm: str, frame: str) -> Any | N
         return None
     if len(head) < 2:
         head = [0.0, 0.0]
+    head = normalize_head_joint_states_rad(head[:2])
     poses = _fk_solver().get_eef_pos(
         [float(value) for value in waist[:2]],
-        [float(value) for value in head[:2]],
+        head,
         [float(value) for value in arm_joints[:7]],
         [float(value) for value in arm_joints[7:14]],
         base_link=frame,

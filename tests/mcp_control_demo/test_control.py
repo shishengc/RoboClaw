@@ -14,6 +14,7 @@ from mcp_control_demo.control import (
     build_lift_eef_action,
     build_move_eef_action,
 )
+from mcp_control_demo.control.joint_units import normalize_head_joint_states_rad
 from mcp_control_demo.control.timing import make_timing, validate_no_control_hz
 
 
@@ -140,6 +141,18 @@ def test_calibration_reads_merged_dynamic_fk_config():
 def test_legacy_static_calibration_is_rejected():
     with pytest.raises(ValueError, match="mcp_control"):
         CalibrationConfig.from_dict({"T_exec_camera": np.eye(4).tolist()})
+
+
+def test_degree_head_joint_observation_is_normalized_to_radians():
+    assert normalize_head_joint_states_rad([0.0, 24.99526934901729]) == pytest.approx(
+        [0.0, math.radians(24.99526934901729)]
+    )
+
+
+def test_radian_head_joint_observation_is_left_unchanged():
+    assert normalize_head_joint_states_rad([0.1, 0.43633230555555524]) == pytest.approx(
+        [0.1, 0.43633230555555524]
+    )
 
 
 def test_lift_eef_uses_camera_lift_axis():

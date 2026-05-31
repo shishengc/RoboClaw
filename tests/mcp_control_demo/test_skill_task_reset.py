@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import math
 
 import numpy as np
 import pytest
@@ -94,6 +95,38 @@ def test_get_eef_pose_returns_exec_and_camera_position(tmp_path):
     assert result["position_exec_m"] == pytest.approx([0.1, 0.2, 0.3 + GRIPPER_CENTER_OFFSET_LINK7_M[2]])
     assert result["position_camera_m"] == pytest.approx([0.1, 0.2, 0.3 + GRIPPER_CENTER_OFFSET_LINK7_M[2]])
     assert result["camera_pose_available"] is True
+
+
+def test_dynamic_fk_converts_degree_head_observation_to_radians(tmp_path):
+    class FakeKinematics:
+        def __init__(self):
+            self.calls = []
+
+        def compute_head_fk(self, head_yaw, head_pitch, waist_pitch, waist_lift):
+            self.calls.append((head_yaw, head_pitch, waist_pitch, waist_lift))
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    task = RuleControlTask(str(config_path))
+    fake_kinematics = FakeKinematics()
+    task._kinematics_for_calibration = lambda calibration: fake_kinematics
+    calibration = CalibrationConfig(t_head_pitch_camera=np.eye(4, dtype=np.float64))
+
+    task._dynamic_t_exec_camera(
+        {
+            "states": {
+                "head_joint_states": [0.0, 24.99526934901729],
+                "waist_joint_states": [0.4044099405259314, 0.3092010498046875],
+            }
+        },
+        calibration,
+    )
+
+    assert len(fake_kinematics.calls) == 1
+    assert fake_kinematics.calls[0] == pytest.approx(
+        (0.0, math.radians(24.99526934901729), 0.4044099405259314, 0.3092010498046875)
+    )
 
 
 def test_camera_views_returns_three_view_metadata_and_base64(tmp_path):

@@ -4,6 +4,8 @@
 
 ```bash
 cd /home/ck/RoboClaw
+export COROBOT_URL="${COROBOT_URL:-http://localhost:8765}"
+export TASK_CONFIG="${TASK_CONFIG:-/home/ck/RoboClaw/.a2d_pkg/corobot/config/rule_control_task_config.yml}"
 ```
 
 ## 1. 当前配置链路
@@ -31,6 +33,18 @@ curl -sS -X POST http://localhost:8765/system/load_policytask \
     "class_name": "RuleControlTask",
     "config_path": "/home/ck/RoboClaw/.a2d_pkg/corobot/config/rule_control_task_config.yml"
   }' | python3 -m json.tool
+```
+
+使用上面的环境变量可以写成：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/system/load_policytask" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"policy_module\": \"corobot.policy_tasks.rule_control_task\",
+    \"class_name\": \"RuleControlTask\",
+    \"config_path\": \"${TASK_CONFIG}\"
+  }" | python3 -m json.tool
 ```
 
 `rule_control_task_config.yml` 中的 control 配置只保存固定参数：
@@ -74,6 +88,8 @@ waist_joint_states = [waist_pitch_rad, waist_lift_m]
 
 `T_base_head_pitch(q)` 必须使用 CoRobot/Pinocchio FK，也就是 `corobot.utils.kinematics.Kinematics.compute_head_fk()`。
 
+注意：RobotDds fallback 读到的 head pitch 可能是 degree，例如 `24.995...`。RuleControlTask 在进入 FK 前会把超出 URDF 弧度范围的 head 读数归一化为 rad；waist 仍按 `[waist_pitch_rad, waist_lift_m]` 使用。
+
 ## 3. 离线检查
 
 运行环境检查：
@@ -90,6 +106,8 @@ PYTHONPATH=/home/ck/RoboClaw/src:/home/ck/RoboClaw/.a2d_pkg:${PYTHONPATH:-} \
 /home/ck/miniconda3/envs/robot/bin/python -m py_compile \
   .a2d_pkg/corobot/policy_tasks/rule_control_task.py \
   src/mcp_control_demo/calibration/config.py \
+  src/mcp_control_demo/control/action_builder.py \
+  src/mcp_control_demo/control/joint_units.py \
   scripts/generate_mcp_control_calibration.py
 ```
 
@@ -101,12 +119,12 @@ PYTHONPATH=/home/ck/RoboClaw/src:/home/ck/RoboClaw/.a2d_pkg:${PYTHONPATH:-} \
 /home/ck/RoboClaw/.venv/bin/python -m pytest -q tests/mcp_control_demo
 ```
 
-## 4. 启动后检查
+## 4. 启动后检查和管理
 
 系统状态：
 
 ```bash
-curl -sS http://localhost:8765/system/status | python3 -m json.tool
+curl -sS "${COROBOT_URL}/system/status" | python3 -m json.tool
 ```
 
 重点检查：
@@ -117,7 +135,7 @@ curl -sS http://localhost:8765/system/status | python3 -m json.tool
 skill 状态：
 
 ```bash
-curl -sS http://localhost:8765/skill/status | python3 -m json.tool
+curl -sS "${COROBOT_URL}/skill/status" | python3 -m json.tool
 ```
 
 重点检查：
@@ -130,30 +148,148 @@ curl -sS http://localhost:8765/skill/status | python3 -m json.tool
 
 如果 `can_compute_T_exec_camera=false`，检查 `rule_control_task_config.yml` 的 `mcp_control.extrinsics.T_head_pitch_camera`。
 
-## 5. 常用接口
+启动/停止当前 PolicyTask：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/system/start_policytask" | python3 -m json.tool
+curl -sS -X POST "${COROBOT_URL}/system/stop_policytask" | python3 -m json.tool
+```
+
+系统层 reset 当前 PolicyTask。对 `RuleControlTask` 来说会调用同一套机器人复位流程：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/system/reset_policytask" | python3 -m json.tool
+```
+
+## 5. 常用命令速查
 
 三视角相机：
 
 ```bash
-curl -sS "http://localhost:8765/skill/camera_views?include_images=false" \
+curl -sS "${COROBOT_URL}/skill/camera_views?include_images=false" \
   | python3 -m json.tool
+```
+
+保存三视角图像，默认写入 `artifacts/test_camera/<date>/`：
+
+```bash
+curl -sS "${COROBOT_URL}/skill/camera_views?format=jpg&include_images=false&save_images=true" \
+  | python3 -m json.tool
+```
+
+机器人复位，推荐优先用这个接口；它会先复位夹爪，再通过 `G01Env.reset` 复位 arm/head/waist：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/skill/reset_robot" \
+  -H "Content-Type: application/json" \
+  -d '{}' | python3 -m json.tool
+```
+
+读取当前 EEF。返回 `position_exec_m` 和 `position_camera_m`，目标语义是 Omnipicker gripper-center TCP：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/skill/get_eef_pose" \
+  -H "Content-Type: application/json" \
+  -d '{"arm": "right", "camera_frame": "head_camera_optical"}' \
+  | python3 -m json.tool
+
+curl -sS -X POST "${COROBOT_URL}/skill/get_eef_pose" \
+  -H "Content-Type: application/json" \
+  -d '{"arm": "left", "camera_frame": "head_camera_optical"}' \
+  | python3 -m json.tool
+```
+
+打开/关闭右夹爪：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/skill/gripper" \
+  -H "Content-Type: application/json" \
+  -d '{"arm": "right", "gripper_value": 0.0, "duration_s": 0.5}' \
+  | python3 -m json.tool
+
+curl -sS -X POST "${COROBOT_URL}/skill/gripper" \
+  -H "Content-Type: application/json" \
+  -d '{"arm": "right", "gripper_value": 1.0, "duration_s": 0.5}' \
+  | python3 -m json.tool
+```
+
+小步移动 EEF。`target_position_camera_m` 是相机坐标系下的 gripper-center TCP 目标点：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/skill/move_eef" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "arm": "right",
+    "camera_frame": "head_camera_optical",
+    "target_position_camera_m": [0.30, 0.02, 0.55],
+    "duration_s": 1.0
+  }' | python3 -m json.tool
+```
+
+也可以用脚本包装同一接口：
+
+```bash
+ARM=right DURATION_S=1.0 bash scripts/test_move_eef.sh 0.30 0.02 0.55
+```
+
+沿相机 lift 方向抬升当前 EEF：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/skill/lift_eef" \
+  -H "Content-Type: application/json" \
+  -d '{"arm": "right", "camera_frame": "head_camera_optical", "distance_m": 0.02, "duration_s": 1.0}' \
+  | python3 -m json.tool
+```
+
+放下并可选打开夹爪：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/skill/place_down" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "arm": "right",
+    "camera_frame": "head_camera_optical",
+    "down_distance_m": 0.02,
+    "duration_s": 1.0,
+    "open_after_down": true
+  }' | python3 -m json.tool
 ```
 
 AprilTag 检测：
 
 ```bash
-curl -sS -X POST http://localhost:8765/skill/detect_tags \
+curl -sS -X POST "${COROBOT_URL}/skill/detect_tags" \
   -H "Content-Type: application/json" \
   -d '{}' | python3 -m json.tool
 ```
 
-读取当前 EEF：
+读取指定 tag：
 
 ```bash
-curl -sS -X POST http://localhost:8765/skill/get_eef_pose \
+curl -sS -X POST "${COROBOT_URL}/skill/get_tag_pose" \
   -H "Content-Type: application/json" \
-  -d '{"arm": "right", "camera_frame": "head_camera_optical"}' \
+  -d '{"tag_id": 0, "allow_stale": false}' \
   | python3 -m json.tool
+```
+
+也可以用脚本：
+
+```bash
+bash scripts/test_apriltag_detection.sh
+bash scripts/test_apriltag_detection.sh 0
+```
+
+基于 AprilTag 的原子技能组合脚本：
+
+```bash
+ARM=right bash scripts/test_grasp_by_tag.sh 0
+
+ARM=right EXECUTE_GRASP=0 bash scripts/test_grasp_by_tag_base_offset.sh 0 0.0 0.0 0.0
+
+ARM=right bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh 0 1 0.0 0.0 0.0
+
+ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+  0 1 0.00 0.00 -0.045 0.0 -0.0015 0.02
 ```
 
 小步移动前确认：
@@ -162,6 +298,7 @@ curl -sS -X POST http://localhost:8765/skill/get_eef_pose \
 - `/skill/status` 显示 `can_compute_T_exec_camera: true`。
 - observation 中有 `head_joint_states` 和 `waist_joint_states`。
 - 首次移动使用 `0.002m` 到 `0.005m`。
+- 不要传 `control_hz` 或 `control_frequency_hz`；控制层固定 30Hz。
 
 ## 6. 重新生成配置
 

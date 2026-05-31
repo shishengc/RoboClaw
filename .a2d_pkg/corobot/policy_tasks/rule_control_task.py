@@ -25,6 +25,7 @@ from mcp_control_demo.control import (
     build_place_down_sequence,
     wrist_to_gripper_center_exec,
 )
+from mcp_control_demo.control.joint_units import normalize_head_joint_states_rad
 from mcp_control_demo.control.timing import validate_no_control_hz
 from mcp_control_demo.perception import AprilTagPerceptionService
 
@@ -371,6 +372,7 @@ class RuleControlTask(PolicyTaskBase):
         waist = _float_list(_get(states, "waist_joint_states"), 2)
         if head is None or waist is None:
             raise ValueError("dynamic_fk requires current head_joint_states and waist_joint_states in observation")
+        head = normalize_head_joint_states_rad(head)
 
         xyzquat = self._kinematics_for_calibration(calibration).compute_head_fk(
             float(head[0]),
@@ -531,9 +533,10 @@ def _fk_eef_pose_from_joint_states(states: Any, arm: str, frame: str) -> Any | N
         return None
     if len(head) < 2:
         head = [0.0, 0.0]
+    head = normalize_head_joint_states_rad(head[:2])
     poses = _fk_solver().get_eef_pos(
         [float(value) for value in waist[:2]],
-        [float(value) for value in head[:2]],
+        head,
         [float(value) for value in arm_joints[:7]],
         [float(value) for value in arm_joints[7:14]],
         base_link=frame,
