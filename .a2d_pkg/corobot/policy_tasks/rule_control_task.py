@@ -49,7 +49,7 @@ DEFAULT_RESET_POSE = {
         0.18762239813804626,
     ],
     "target_head_positions": [0.0, 0.43633230555555524],
-    "target_waist_positions": [0.8901176920412174, 0.4598677062988281],
+    "target_waist_positions": [0.8901176920412174, 0.3298677062988281],
 }
 
 RESET_CONFIG_KEY_MAP = {

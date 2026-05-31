@@ -53,7 +53,7 @@ perception:
   camera_name: head
   camera_frame: head_camera_optical
   tag_family: tag25h9
-  tag_size_m: 0.019
+  tag_size_m: 0.020
   stale_after_s: 1.0
 
 reset_on_initialize: true
@@ -62,7 +62,7 @@ reset_pose:
   # [head_yaw_rad, head_pitch_rad]
   target_head_positions: [0.0, 0.43633230555555524]
   # [waist_pitch_rad, waist_lift_m]
-  target_waist_positions: [0.8901176920412174, 0.4598677062988281]
+  target_waist_positions: [0.8901176920412174, 0.3298677062988281]
 
 environment:
   dataloader:

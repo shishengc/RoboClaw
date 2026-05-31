@@ -16,7 +16,8 @@ from corobot.transport import msgpack_numpy
 from corobot.utils.dds_setting import dds_env_set
 
 
-DEFAULT_PROMPT = "Pull open the drawer"
+DEFAULT_PROMPT = "Push close the drawer"
+# Pull open the drawer Push close the drawer
 LATEST_ACTION_FILENAME = "latest_action.json"
 
 
@@ -98,7 +99,8 @@ def _default_reset_pose() -> dict[str, Any]:
             0.187605,
         ],
         "target_head_positions": [0.0, 0.43633230555555524],
-        "target_waist_positions": [0.40441, 0.3098677062988281],
+        # "target_waist_positions": [0.40441, 0.2598677062988281],
+        "target_waist_positions": [0.8901176920412174, 0.3598677062988281]
     }
 
 
@@ -456,7 +458,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--save-dir", default="artifacts/corobot_policy_auto_loop")
     parser.add_argument("--steps-per-chunk", type=int, default=30)
-    parser.add_argument("--chunks-per-round", type=int, default=15)
+    parser.add_argument("--chunks-per-round", type=int, default=30)
     parser.add_argument("--reset-pause", type=float, default=1.0)
     parser.add_argument("--max-chunks", type=int, default=0, help="0 means run until interrupted.")
     parser.add_argument("--no-reset-on-interrupt", action="store_true")

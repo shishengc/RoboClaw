@@ -20,6 +20,7 @@ from debug_corobot_policy_auto_loop import (
 )
 
 DEFAULT_PROMPT = "Pull open the drawer"
+# "Push close the drawer"
 
 
 def _format_prompt(prompt: str, limit: int = 120) -> str:
@@ -123,7 +124,7 @@ def main() -> int:
     parser.add_argument("--prompt-file", default=None, help="Optional file polled before every chunk prompt.")
     parser.add_argument("--attempts", type=int, default=20)
     parser.add_argument("--interval", type=float, default=0.25)
-    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--save-dir", default="artifacts/corobot_policy_prompt_loop")
     parser.add_argument("--steps-per-chunk", type=int, default=30)
     parser.add_argument("--max-chunks", type=int, default=0, help="0 means run until the operator stops.")

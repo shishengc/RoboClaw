@@ -8,53 +8,101 @@ TASK_CONFIG_PATH="${TASK_CONFIG_PATH:-/home/ck/RoboClaw/.a2d_pkg/corobot/config/
 PYTHON_BIN="${PYTHON_BIN:-/home/ck/miniconda3/envs/robot/bin/python}"
 MOVE_DURATION_S="${MOVE_DURATION_S:-2.0}"
 GRIPPER_DURATION_S="${GRIPPER_DURATION_S:-0.5}"
-APPROACH_DISTANCE_M="${APPROACH_DISTANCE_M:-0.06}"
+BUTTON_TAG_ID="${BUTTON_TAG_ID:-20}"
 LIFT_DZ_BASE_M="${LIFT_DZ_BASE_M:-0.10}"
-EXECUTE_GRASP="${EXECUTE_GRASP:-0}"
+PRESS_HOLD_S="${PRESS_HOLD_S:-0.5}"
+CLOSE_GRIPPER_VALUE="${CLOSE_GRIPPER_VALUE:-1.0}"
+EXECUTE_BUTTON_PRESS="${EXECUTE_BUTTON_PRESS:-0}"
 
-if [[ $# -ne 4 ]]; then
+usage() {
   cat >&2 <<'EOF'
 Usage:
-  ARM=right bash scripts/test_grasp_by_tag_base_offset.sh <tag_id> <dx_base_m> <dy_base_m> <dz_base_m>
+  ARM=right bash scripts/test_press_button_by_tag_base_offset.sh
+
+  ARM=right bash scripts/test_press_button_by_tag_base_offset.sh <tag_id>
+
+  ARM=right bash scripts/test_press_button_by_tag_base_offset.sh \
+    <dx_base_m> <dy_base_m> <dz_base_m>
+
+  ARM=right bash scripts/test_press_button_by_tag_base_offset.sh \
+    <tag_id> <dx_base_m> <dy_base_m> <dz_base_m>
 
 Example dry-run:
-  ARM=right bash scripts/test_grasp_by_tag_base_offset.sh 5 0.00 0.00 0.02
+  ARM=right bash scripts/test_press_button_by_tag_base_offset.sh
+  ARM=right bash scripts/test_press_button_by_tag_base_offset.sh 20 0.00 0.00 0.00
 
 Execute on robot:
-  ARM=right EXECUTE_GRASP=1 bash scripts/test_grasp_by_tag_base_offset.sh 15 0.00 0.00 -0.06
+  ARM=right EXECUTE_BUTTON_PRESS=1 bash scripts/test_press_button_by_tag_base_offset.sh \
+    20 0.00 0.00 0.00
+
+Behavior:
+  1. Detect AprilTags and read the requested button tag, default tag 20.
+  2. Close the selected gripper.
+  3. Move the configured gripper-center TCP directly to the button press point.
+  4. Hold there for PRESS_HOLD_S.
+  5. Lift upward in base_link by LIFT_DZ_BASE_M.
 
 Environment:
   COROBOT_URL             default http://localhost:8765
+  ARM                     default right
+  BUTTON_TAG_ID           default 20, overridden by CLI tag_id
   CAMERA_FRAME            default head_camera_optical
   TASK_CONFIG_PATH        default .a2d_pkg/corobot/config/rule_control_task_config.yml
   MOVE_DURATION_S         default 2.0
   GRIPPER_DURATION_S      default 0.5
-  APPROACH_DISTANCE_M     default 0.06, applied along configured camera_approach_axis
-  LIFT_DZ_BASE_M          default 0.10, applied as +Z in base_link after closing
-  EXECUTE_GRASP           default 0; set 1 to execute
+  LIFT_DZ_BASE_M          default 0.10, base_link +Z after pressing
+  PRESS_HOLD_S            default 0.5, seconds to wait between press and lift
+  CLOSE_GRIPPER_VALUE     default 1.0
+  EXECUTE_BUTTON_PRESS    default 0; set 1 to execute
 
 Notes:
-  /skill/move_eef now treats target_position_camera_m as the Omnipicker
-  gripper-center TCP target. The control layer subtracts the fixed
-  link7->TCP offset and still sends wrist/link7 EEF_ABS to A2D.
-  Base-link offsets in this helper are converted by dynamically composing
+  /skill/move_eef treats target_position_camera_m as the configured
+  gripper-center TCP target. If the physical button contact point is not exactly
+  at the tag center, tune the base-link offset arguments.
+  Base-link offsets are converted by composing
   T_base_head_pitch(reset_pose) * T_head_pitch_camera from the task config.
   Keep head/waist at reset_pose for this planning helper, or prefer direct
   camera-frame targets.
 EOF
+}
+
+case "$#" in
+  0)
+    set -- 0.0 0.0 0.0
+    ;;
+  1)
+    BUTTON_TAG_ID="$1"
+    set -- 0.0 0.0 0.0
+    ;;
+  3)
+    ;;
+  4)
+    BUTTON_TAG_ID="$1"
+    shift
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+if [[ $# -ne 3 ]]; then
+  usage
   exit 2
 fi
 
 export PYTHONPATH="/home/ck/RoboClaw/src:/home/ck/RoboClaw/.a2d_pkg:${PYTHONPATH:-}"
 export COROBOT_URL ARM CAMERA_FRAME TASK_CONFIG_PATH
-export MOVE_DURATION_S GRIPPER_DURATION_S APPROACH_DISTANCE_M LIFT_DZ_BASE_M EXECUTE_GRASP
+export MOVE_DURATION_S GRIPPER_DURATION_S BUTTON_TAG_ID
+export LIFT_DZ_BASE_M PRESS_HOLD_S CLOSE_GRIPPER_VALUE EXECUTE_BUTTON_PRESS
 
-"${PYTHON_BIN}" - "$1" "$2" "$3" "$4" <<'PY'
+"${PYTHON_BIN}" - "$1" "$2" "$3" <<'PY'
 from __future__ import annotations
 
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from contextlib import redirect_stdout
@@ -69,10 +117,10 @@ from corobot.utils.fk_solver import _find_urdf_solver_dir
 from corobot.utils.kinematics import Kinematics
 
 from mcp_control_demo.calibration import load_calibration_config
+from mcp_control_demo.control.joint_units import normalize_head_joint_states_rad
 
 
-tag_id = int(sys.argv[1])
-base_offset = np.asarray([float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])], dtype=np.float64)
+base_offset = np.asarray([float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])], dtype=np.float64)
 
 corobot_url = os.environ["COROBOT_URL"].rstrip("/")
 arm = os.environ["ARM"]
@@ -80,9 +128,11 @@ camera_frame = os.environ["CAMERA_FRAME"]
 task_config_path = os.environ["TASK_CONFIG_PATH"]
 move_duration_s = float(os.environ["MOVE_DURATION_S"])
 gripper_duration_s = float(os.environ["GRIPPER_DURATION_S"])
-approach_distance_m = float(os.environ["APPROACH_DISTANCE_M"])
+button_tag_id = int(os.environ["BUTTON_TAG_ID"])
 lift_dz_base_m = float(os.environ["LIFT_DZ_BASE_M"])
-execute = os.environ["EXECUTE_GRASP"] == "1"
+press_hold_s = float(os.environ["PRESS_HOLD_S"])
+close_gripper_value = float(os.environ["CLOSE_GRIPPER_VALUE"])
+execute = os.environ["EXECUTE_BUTTON_PRESS"] == "1"
 
 
 def post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -120,68 +170,64 @@ def calibration_from_reset_pose(path: str):
     if calibration.t_head_pitch_camera is None:
         raise RuntimeError("task config must contain mcp_control.extrinsics.T_head_pitch_camera")
 
+    head_rad = normalize_head_joint_states_rad([float(value) for value in head[:2]])
+    waist_values = [float(value) for value in waist[:2]]
+    if len(head_rad) != 2 or len(waist_values) != 2:
+        raise RuntimeError("reset_pose head/waist positions must each contain 2 values")
+
     with redirect_stdout(StringIO()):
         kinematics = Kinematics(str(_find_urdf_solver_dir() / "A2D_viz.urdf"))
-    xyzquat = kinematics.compute_head_fk(float(head[0]), float(head[1]), float(waist[0]), float(waist[1]))
+    xyzquat = kinematics.compute_head_fk(
+        float(head_rad[0]),
+        float(head_rad[1]),
+        float(waist_values[0]),
+        float(waist_values[1]),
+    )
     t_base_head = np.eye(4, dtype=np.float64)
     t_base_head[:3, :3] = R.from_quat(xyzquat[3:]).as_matrix()
     t_base_head[:3, 3] = np.asarray(xyzquat[:3], dtype=np.float64)
     return calibration.with_t_exec_camera(t_base_head @ calibration.t_head_pitch_camera)
 
 
+def get_tag(tag_id: int) -> dict[str, Any]:
+    tag = post("/skill/get_tag_pose", {"tag_id": tag_id})
+    if not tag.get("ok", False):
+        raise RuntimeError(f"tag {tag_id} is unavailable: {json.dumps(tag, ensure_ascii=False)}")
+    return tag
+
+
 calibration = calibration_from_reset_pose(task_config_path)
 
-# Refresh detection first, then query the requested tag.
 post("/skill/detect_tags", {})
-tag = post("/skill/get_tag_pose", {"tag_id": tag_id})
-if not tag.get("ok", False):
-    raise RuntimeError(f"tag {tag_id} is unavailable: {json.dumps(tag, ensure_ascii=False)}")
+button_tag = get_tag(button_tag_id)
 
-tag_camera = np.asarray(tag["position_camera_m"], dtype=np.float64).reshape(3)
+tag_camera = np.asarray(button_tag["position_camera_m"], dtype=np.float64).reshape(3)
 tag_base = calibration.camera_to_exec_point(tag_camera, camera_frame)
 
-grasp_base = tag_base + base_offset
-grasp_camera = calibration.exec_to_camera_point(grasp_base, camera_frame)
+button_base = tag_base + base_offset
+lift_base = button_base + np.asarray([0.0, 0.0, lift_dz_base_m], dtype=np.float64)
 
-approach_camera = grasp_camera + calibration.camera_approach_axis * approach_distance_m
-approach_base = calibration.camera_to_exec_point(approach_camera, camera_frame)
-
-lift_base = grasp_base + np.asarray([0.0, 0.0, lift_dz_base_m], dtype=np.float64)
+button_camera = calibration.exec_to_camera_point(button_base, camera_frame)
 lift_camera = calibration.exec_to_camera_point(lift_base, camera_frame)
 
 payloads = [
     (
-        "open_gripper",
-        "/skill/gripper",
-        {"arm": arm, "gripper_value": 0.0, "duration_s": gripper_duration_s},
-    ),
-    (
-        "move_to_approach",
-        "/skill/move_eef",
-        {
-            "arm": arm,
-            "camera_frame": camera_frame,
-            "target_position_camera_m": rounded(approach_camera),
-            "duration_s": move_duration_s,
-        },
-    ),
-    (
-        "move_to_grasp_with_base_offset",
-        "/skill/move_eef",
-        {
-            "arm": arm,
-            "camera_frame": camera_frame,
-            "target_position_camera_m": rounded(grasp_camera),
-            "duration_s": move_duration_s,
-        },
-    ),
-    (
         "close_gripper",
         "/skill/gripper",
-        {"arm": arm, "gripper_value": 1.0, "duration_s": gripper_duration_s},
+        {"arm": arm, "gripper_value": close_gripper_value, "duration_s": gripper_duration_s},
     ),
     (
-        "lift_in_base_z",
+        "move_to_button_press",
+        "/skill/move_eef",
+        {
+            "arm": arm,
+            "camera_frame": camera_frame,
+            "target_position_camera_m": rounded(button_camera),
+            "duration_s": move_duration_s,
+        },
+    ),
+    (
+        "lift_after_press",
         "/skill/move_eef",
         {
             "arm": arm,
@@ -195,28 +241,37 @@ payloads = [
 plan = {
     "execute": execute,
     "arm": arm,
-    "tag_id": tag_id,
+    "button_tag_id": button_tag_id,
     "camera_frame": camera_frame,
     "move_eef_target_semantics": "target_position_camera_m is desired gripper-center TCP; control layer sends wrist/link7 target to A2D",
     "base_offset_m": rounded(base_offset),
+    "lift_dz_base_m": lift_dz_base_m,
+    "press_hold_s": press_hold_s,
     "tag_position_camera_m": rounded(tag_camera),
     "tag_position_base_m": rounded(tag_base),
-    "grasp_position_base_m": rounded(grasp_base),
-    "grasp_position_camera_m": rounded(grasp_camera),
-    "approach_position_base_m": rounded(approach_base),
-    "approach_position_camera_m": rounded(approach_camera),
+    "button_contact_base_m": rounded(button_base),
+    "button_contact_camera_m": rounded(button_camera),
     "lift_position_base_m": rounded(lift_base),
     "lift_position_camera_m": rounded(lift_camera),
     "payloads": [{"name": name, "path": path, "payload": payload} for name, path, payload in payloads],
+    "sequence": [
+        "close_gripper",
+        "move_to_button_press",
+        f"hold {press_hold_s:.3f}s",
+        "lift_after_press",
+    ],
 }
 print(json.dumps(plan, indent=2, ensure_ascii=False))
 
 if not execute:
-    print("\nDry-run only. Set EXECUTE_GRASP=1 to execute this sequence.", file=sys.stderr)
+    print("\nDry-run only. Set EXECUTE_BUTTON_PRESS=1 to execute this sequence.", file=sys.stderr)
     sys.exit(0)
 
 for name, path, payload in payloads:
     print(f"\n>>> {name}: {path}", file=sys.stderr)
     result = post(path, payload)
     print(json.dumps({"name": name, "result": result}, indent=2, ensure_ascii=False))
+    if name == "move_to_button_press" and press_hold_s > 0:
+        print(f"\n>>> hold_after_press: {press_hold_s:.3f}s", file=sys.stderr)
+        time.sleep(press_hold_s)
 PY

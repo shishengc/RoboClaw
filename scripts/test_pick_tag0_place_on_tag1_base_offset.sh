@@ -43,13 +43,13 @@ Execute on robot:
     0 1 0.00 0.00 -0.045 0.0 -0.0015 0.02
 
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    2 3 0.00 0.00 -0.06 0 0 0.13
+    2 3 0.00 0.00 -0.06 0 0 0.10
 
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    0 4 0.00 0.00 -0.06 0 0 0.13
+    0 4 -0.01 0.01 -0.07 0 0 0.10
 
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    10 11 0.00 0.00 -0.03 0.02 -0.02 0.08
+    15 1 0.00 0.00 -0.05 -0.012 -0.015 0.03
 
 Behavior:
   1. Detect AprilTags.
