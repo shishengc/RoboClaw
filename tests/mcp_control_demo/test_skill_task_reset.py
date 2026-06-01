@@ -11,12 +11,15 @@ from corobot.policy_tasks.rule_control_task import RuleControlTask
 from mcp_control_demo.calibration import CalibrationConfig
 from mcp_control_demo.control import GRIPPER_CENTER_OFFSET_LINK7_M
 from mcp_control_demo.corobot_skill_task.skill_task import McpControlSkillTask
+from corobot.protocol.protocol_schemas import Action, STD_MODEL_INPUT
+from corobot.transport import msgpack_numpy
 
 
 class FakeEnv:
-    def __init__(self, observation=None):
+    def __init__(self, observation=None, std_model_inputs=None):
         self.calls = []
         self.observation = observation
+        self.std_model_inputs = list(std_model_inputs or [])
 
     def execute_action(self, action, wait_action_time: float):
         self.calls.append(("execute_action", action, wait_action_time))
@@ -26,6 +29,30 @@ class FakeEnv:
 
     def get_observation(self):
         return self.observation
+
+    def get_std_model_input(self):
+        if self.std_model_inputs:
+            return self.std_model_inputs.pop(0)
+        return STD_MODEL_INPUT(observation=self.observation or {})
+
+
+class FakePolicyWebSocket:
+    def __init__(self, frames):
+        self.frames = list(frames)
+        self.sent = []
+        self.closed = False
+
+    def recv(self):
+        frame = self.frames.pop(0)
+        if isinstance(frame, Exception):
+            raise frame
+        return frame
+
+    def send(self, data):
+        self.sent.append(msgpack_numpy.unpackb(data))
+
+    def close(self):
+        self.closed = True
 
 
 class FakePerception:
@@ -37,6 +64,29 @@ class FakePerception:
 
     def status(self):
         return {"cached_tag_ids": [int(item["tag_id"]) for item in self.detections]}
+
+
+def _complete_policy_input() -> STD_MODEL_INPUT:
+    return STD_MODEL_INPUT(
+        observation={
+            "timestamps": {"head": 1, "hand_left": 1, "hand_right": 1},
+            "images": {
+                "head": np.zeros((4, 4, 3), dtype=np.uint8),
+                "hand_left": np.zeros((4, 4, 3), dtype=np.uint8),
+                "hand_right": np.zeros((4, 4, 3), dtype=np.uint8),
+            },
+            "states": {
+                "arm_joint_states": [0.0] * 14,
+                "gripper_states": [0.0, 0.0],
+                "head_joint_states": [0.0, 0.0],
+                "waist_joint_states": [0.0, 0.0],
+            },
+        }
+    )
+
+
+def _packed(value):
+    return msgpack_numpy.packb(value)
 
 
 def test_reset_robot_is_exposed_and_uses_safe_order(tmp_path):
@@ -63,6 +113,8 @@ reset_pose:
     assert "/skill/get_eef_pose" in paths
     assert "/skill/camera_views" in paths
     assert "/skill/switch_scene" in paths
+    assert "/skill/start_policy" in paths
+    assert "/skill/policy_status" in paths
 
     result = task.reset_robot()
 
@@ -98,6 +150,101 @@ def test_rule_control_skill_apis_do_not_expose_control_frequency_arguments(tmp_p
     for api in task.get_exposed_apis():
         parameters = inspect.signature(api["handler"]).parameters
         assert hidden_parameters.isdisjoint(parameters)
+
+
+def test_start_policy_executes_chunks_records_latest_action_and_resets(tmp_path, monkeypatch):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    returned_actions = [
+        Action(timestamps=101, trajectory_reference_time=0.01, left_effector=[[0.1]], right_effector=[[0.2]]),
+        Action(timestamps=102, trajectory_reference_time=0.02, left_effector=[[0.3]], right_effector=[[0.4]]),
+    ]
+    fake_ws = FakePolicyWebSocket(
+        [
+            _packed({"camera_names": ["head", "hand_left", "hand_right"]}),
+            *[_packed(action.model_dump()) for action in returned_actions],
+        ]
+    )
+    monkeypatch.setattr(
+        "corobot.policy_tasks.rule_control_task.websocket_client.connect",
+        lambda *args, **kwargs: fake_ws,
+    )
+
+    task = RuleControlTask(str(config_path))
+    env = FakeEnv(std_model_inputs=[_complete_policy_input(), _complete_policy_input()])
+    task._env = env
+
+    start_result = task.start_policy(prompt="pick up the cube", port=8999, chunk_count=2)
+    assert start_result["ok"] is True
+    assert task._policy_thread is not None
+    task._policy_thread.join(timeout=2.0)
+
+    status = task.policy_status()
+    assert status["ok"] is True
+    assert status["running"] is False
+    assert status["completed"] is True
+    assert status["failed"] is False
+    assert status["executed_chunks"] == 2
+    assert status["latest_action_chunk_index"] == 2
+    assert status["latest_action"]["timestamps"] == 102
+    assert status["metadata"] == {"camera_names": ["head", "hand_left", "hand_right"]}
+    assert status["reset_result"]["ok"] is True
+    assert fake_ws.closed is True
+    assert [payload["prompt"] for payload in fake_ws.sent] == ["pick up the cube", "pick up the cube"]
+
+    policy_action_calls = [
+        call for call in env.calls if call[0] == "execute_action" and getattr(call[1], "timestamps", None) in {101, 102}
+    ]
+    assert len(policy_action_calls) == 2
+    assert [call[2] for call in policy_action_calls] == pytest.approx([0.01, 0.02])
+    assert env.calls[-1][0] == "reset"
+
+
+def test_start_policy_failure_marks_failed_and_resets(tmp_path, monkeypatch):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    fake_ws = FakePolicyWebSocket(
+        [
+            _packed({"camera_names": ["head", "hand_left", "hand_right"]}),
+            _packed({"error": "policy refused request"}),
+        ]
+    )
+    monkeypatch.setattr(
+        "corobot.policy_tasks.rule_control_task.websocket_client.connect",
+        lambda *args, **kwargs: fake_ws,
+    )
+
+    task = RuleControlTask(str(config_path))
+    env = FakeEnv(std_model_inputs=[_complete_policy_input()])
+    task._env = env
+
+    result = task.start_policy(prompt="pick up the cube", port=8999, chunk_count=1)
+    assert result["ok"] is True
+    assert task._policy_thread is not None
+    task._policy_thread.join(timeout=2.0)
+
+    status = task.policy_status()
+    assert status["ok"] is False
+    assert status["running"] is False
+    assert status["completed"] is False
+    assert status["failed"] is True
+    assert status["executed_chunks"] == 0
+    assert "policy refused request" in status["last_error"]
+    assert status["reset_result"]["ok"] is True
+    assert fake_ws.closed is True
+    assert env.calls[-1][0] == "reset"
+
+
+def test_start_policy_rejects_invalid_arguments_without_thread(tmp_path):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    task = RuleControlTask(str(config_path))
+    task._env = FakeEnv(std_model_inputs=[_complete_policy_input()])
+
+    assert task.start_policy(prompt="", port=8999, chunk_count=1)["ok"] is False
+    assert task.start_policy(prompt="valid", port=0, chunk_count=1)["ok"] is False
+    assert task.start_policy(prompt="valid", port=8999, chunk_count=0)["ok"] is False
+    assert task._policy_thread is None
 
 
 def test_get_eef_pose_returns_exec_and_camera_position(tmp_path):

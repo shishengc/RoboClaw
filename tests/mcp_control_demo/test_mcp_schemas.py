@@ -36,5 +36,7 @@ def test_expected_primitive_tools_are_present():
         "open_gripper",
         "close_gripper",
         "switch_scene",
+        "start_policy",
+        "get_policy_status",
     } <= names
     assert "grasp_by_tag" not in names

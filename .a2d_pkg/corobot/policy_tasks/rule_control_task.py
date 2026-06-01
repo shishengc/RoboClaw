@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 import time
 from contextlib import redirect_stdout
 from io import StringIO
@@ -9,10 +10,12 @@ from typing import Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from websockets.sync import client as websocket_client
 
 from corobot.envs.g01_env import G01Env
 from corobot.policy_tasks.policy_task_base import PolicyTaskBase
 from corobot.protocol.protocol_schemas import Action
+from corobot.transport import msgpack_numpy
 from corobot.utils.api_decorators import expose_api
 from corobot.utils.log_setting import CoLogger as logger
 
@@ -78,6 +81,17 @@ class RuleControlTask(PolicyTaskBase):
         self._reset_on_initialize = False
         self._kinematics = None
         self._kinematics_urdf_path: str | None = None
+        policy_skill_cfg = self.config.get("policy_skill") or {}
+        policy_cfg = self.config.get("policy") or {}
+        self._policy_host = policy_skill_cfg.get("host") or policy_cfg.get("host") or "127.0.0.1"
+        self._policy_timeout_s = float(
+            policy_skill_cfg.get("timeout_s", policy_skill_cfg.get("timeout", policy_cfg.get("timeout", 30.0)))
+        )
+        self._policy_lock = threading.RLock()
+        self._policy_stop_event = threading.Event()
+        self._policy_thread: threading.Thread | None = None
+        self._policy_ws = None
+        self._policy_state = self._new_policy_state()
 
     def initialize(self) -> bool:
         env_config = self.config.get("env_config") or self.config.get("environment") or None
@@ -104,13 +118,16 @@ class RuleControlTask(PolicyTaskBase):
         self._running = True
 
     def stop(self):
+        self._stop_policy_thread()
         self._running = False
 
     def reset(self):
+        self._stop_policy_thread(join_timeout_s=None)
         self._reset_robot_pose()
 
     def cleanup(self):
-        self.stop()
+        self._stop_policy_thread(join_timeout_s=None)
+        self._running = False
         if self._env is not None:
             self._env.close()
             self._env = None
@@ -140,6 +157,55 @@ class RuleControlTask(PolicyTaskBase):
                 "has_target_waist_positions": self._reset_pose.get("target_waist_positions") is not None,
             },
         }
+
+    @expose_api(method="POST", path="/skill/start_policy")
+    def start_policy(self, prompt: str, port: int, chunk_count: int) -> dict[str, Any]:
+        prompt = str(prompt or "").strip()
+        try:
+            port = int(port)
+            chunk_count = int(chunk_count)
+        except Exception:
+            return self._policy_status_with_error("port and chunk_count must be integers")
+
+        if not prompt:
+            return self._policy_status_with_error("prompt must be a non-empty string")
+        if port < 1 or port > 65535:
+            return self._policy_status_with_error("port must be between 1 and 65535")
+        if chunk_count < 1:
+            return self._policy_status_with_error("chunk_count must be greater than or equal to 1")
+        if self._env is None:
+            return self._policy_status_with_error("G01Env is not initialized")
+
+        policy_url = f"ws://{self._policy_host}:{port}"
+        with self._policy_lock:
+            if self._policy_thread is not None and self._policy_thread.is_alive():
+                status = self._policy_status_unlocked()
+                status["ok"] = False
+                status["message"] = "policy run is already active"
+                return status
+
+            self._policy_stop_event.clear()
+            self._policy_state = self._new_policy_state(
+                running=True,
+                prompt=prompt,
+                policy_port=port,
+                policy_url=policy_url,
+                target_chunks=chunk_count,
+            )
+            self._running = True
+            self._policy_ws = None
+            self._policy_thread = threading.Thread(
+                target=self._policy_loop,
+                args=(prompt, chunk_count, policy_url),
+                daemon=True,
+                name="RuleControlTaskPolicySkill",
+            )
+            self._policy_thread.start()
+            return self._policy_status_unlocked()
+
+    @expose_api(method="GET", path="/skill/policy_status")
+    def policy_status(self) -> dict[str, Any]:
+        return self._policy_status()
 
     @expose_api(method="POST", path="/skill/reset_robot")
     def reset_robot(self) -> dict[str, Any]:
@@ -453,6 +519,156 @@ class RuleControlTask(PolicyTaskBase):
         for action in actions:
             self._execute(action, float(action["trajectory_reference_time"]))
 
+    def _policy_loop(self, prompt: str, chunk_count: int, policy_url: str) -> None:
+        ws = None
+        completed = False
+        failed = False
+        last_error = None
+        reset_result = None
+        try:
+            logger.info(f"Connecting policy skill: {policy_url}")
+            ws = websocket_client.connect(
+                policy_url,
+                compression=None,
+                max_size=None,
+                open_timeout=self._policy_timeout_s,
+                close_timeout=self._policy_timeout_s,
+            )
+            with self._policy_lock:
+                self._policy_ws = ws
+            metadata = _unpack_policy_frame(ws.recv(), "metadata")
+            with self._policy_lock:
+                self._policy_state["metadata"] = _json_safe(metadata)
+
+            for chunk_index in range(1, chunk_count + 1):
+                if self._policy_stop_event.is_set():
+                    break
+
+                payload = self._policy_model_input(prompt)
+                ws.send(msgpack_numpy.packb(_model_dump(payload)))
+                response = _unpack_policy_frame(ws.recv(), "response")
+                if isinstance(response, dict) and "error" in response:
+                    raise RuntimeError(str(response["error"]))
+
+                action = Action(**response)
+                self._execute(action, action.trajectory_reference_time)
+                with self._policy_lock:
+                    self._policy_state["executed_chunks"] = chunk_index
+                    self._policy_state["latest_action"] = _json_safe(_model_dump(action))
+                    self._policy_state["latest_action_chunk_index"] = chunk_index
+
+            completed = not self._policy_stop_event.is_set()
+
+        except Exception as exc:
+            if self._policy_stop_event.is_set():
+                logger.info(f"Policy skill stopped: {exc}")
+            else:
+                failed = True
+                last_error = str(exc)
+                logger.error(f"Policy skill execution failed: {exc}")
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception as exc:
+                    logger.warning(f"Failed to close policy websocket: {exc}")
+                with self._policy_lock:
+                    if self._policy_ws is ws:
+                        self._policy_ws = None
+
+            if completed or failed:
+                try:
+                    reset_result = self._reset_robot_pose()
+                except Exception as exc:
+                    reset_result = {"ok": False, "error": str(exc)}
+                    failed = True
+                    completed = False
+                    last_error = (
+                        f"{last_error}; reset failed: {exc}" if last_error else f"reset failed: {exc}"
+                    )
+
+            with self._policy_lock:
+                self._policy_state["running"] = False
+                self._policy_state["completed"] = completed
+                self._policy_state["failed"] = failed
+                self._policy_state["last_error"] = last_error
+                self._policy_state["reset_result"] = _json_safe(reset_result)
+                self._running = False
+
+    def _policy_model_input(self, prompt: str):
+        if self._env is None:
+            raise RuntimeError("G01Env is not initialized")
+        if not hasattr(self._env, "get_std_model_input"):
+            raise RuntimeError("G01Env does not expose get_std_model_input")
+
+        payload = self._env.get_std_model_input()
+        if payload is None:
+            raise RuntimeError("policy input is unavailable")
+        ready, reason = _policy_input_ready(payload)
+        if not ready:
+            raise RuntimeError(f"policy input is not ready: {reason}")
+        payload.prompt = prompt
+        return payload
+
+    def _new_policy_state(
+        self,
+        *,
+        running: bool = False,
+        prompt: str | None = None,
+        policy_port: int | None = None,
+        policy_url: str | None = None,
+        target_chunks: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "running": running,
+            "completed": False,
+            "failed": False,
+            "prompt": prompt,
+            "policy_port": policy_port,
+            "policy_url": policy_url,
+            "target_chunks": int(target_chunks),
+            "executed_chunks": 0,
+            "latest_action": None,
+            "latest_action_chunk_index": None,
+            "metadata": None,
+            "last_error": None,
+            "reset_result": None,
+        }
+
+    def _policy_status(self) -> dict[str, Any]:
+        with self._policy_lock:
+            return self._policy_status_unlocked()
+
+    def _policy_status_unlocked(self) -> dict[str, Any]:
+        status = _json_safe(self._policy_state)
+        status["ok"] = not bool(status.get("failed"))
+        return status
+
+    def _policy_status_with_error(self, message: str) -> dict[str, Any]:
+        status = self._policy_status()
+        status["ok"] = False
+        status["message"] = message
+        return status
+
+    def _stop_policy_thread(self, join_timeout_s: float | None = 5.0) -> None:
+        thread = self._policy_thread
+        if thread is None:
+            return
+        if thread.is_alive():
+            self._policy_stop_event.set()
+            ws = self._policy_ws
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception as exc:
+                    logger.warning(f"Failed to close policy websocket while stopping: {exc}")
+            if thread is not threading.current_thread():
+                thread.join(timeout=join_timeout_s)
+        if not thread.is_alive():
+            with self._policy_lock:
+                self._policy_state["running"] = False
+
     def _calibration_config(self) -> CalibrationConfig:
         if self._calibration is None:
             raise RuntimeError("calibration is not initialized")
@@ -584,6 +800,79 @@ class RuleControlTask(PolicyTaskBase):
             "target_grippers_positions": target,
             "duration_s": action.trajectory_reference_time,
         }
+
+
+def _model_dump(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return value
+
+
+def _json_safe(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return _json_safe(value.model_dump())
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return value
+
+
+def _unpack_policy_frame(frame: Any, frame_name: str) -> Any:
+    if isinstance(frame, str):
+        raise RuntimeError(f"Policy returned a text {frame_name} frame instead of msgpack bytes:\n{frame}")
+    if not isinstance(frame, (bytes, bytearray, memoryview)):
+        raise TypeError(f"Policy returned unsupported {frame_name} frame type: {type(frame).__name__}")
+    return msgpack_numpy.unpackb(frame)
+
+
+def _policy_input_ready(payload: Any) -> tuple[bool, str]:
+    obs = _get(payload, "observation")
+    if obs is None:
+        return False, "observation is unavailable"
+
+    images = _get(obs, "images")
+    missing_images = [
+        name
+        for name in ("head", "hand_left", "hand_right")
+        if _image_to_array(_get(images, name)) is None
+    ]
+    if missing_images:
+        return False, f"missing images: {', '.join(missing_images)}"
+
+    states = _get(obs, "states")
+    state_requirements = {
+        "arm_joint_states": 14,
+        "gripper_states": 2,
+        "head_joint_states": 2,
+        "waist_joint_states": 2,
+    }
+    missing_states = []
+    for state_name, min_len in state_requirements.items():
+        actual_len = _sequence_len(_get(states, state_name))
+        if actual_len < min_len:
+            missing_states.append(f"{state_name} has {actual_len} value(s), expected at least {min_len}")
+    if missing_states:
+        return False, "; ".join(missing_states)
+
+    return True, "ok"
+
+
+def _sequence_len(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        return len(value)
+    except Exception:
+        return 1
 
 
 def _copy_reset_pose(pose: dict[str, Any]) -> dict[str, list[float] | None]:

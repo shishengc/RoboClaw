@@ -77,6 +77,11 @@ environment:
         head_depth: false
         hand_left_depth: false
         hand_right_depth: false
+      robot_states:
+        arm_joint_states: true
+        gripper_states: true
+        head_joint_states: true
+        waist_joint_states: true
 
   motion_controller:
     enabled: true

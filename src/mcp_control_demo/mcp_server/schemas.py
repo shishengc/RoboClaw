@@ -160,4 +160,26 @@ MCP_CONTROL_TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "start_policy",
+        "description": "启动后台 policy skill：通过 websocket 发送三视角观测和 prompt，按 chunk_count 执行远端返回的 action chunk，结束或失败后自动复位机器人。",
+        "inputSchema": {
+            "type": "object",
+            "required": ["prompt", "port", "chunk_count"],
+            "properties": {
+                "prompt": {"type": "string", "description": "发送给远端 policy 的任务提示词。"},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535, "description": "本机 policy websocket 端口。"},
+                "chunk_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "执行多少个完整 policy action chunk 后自动停止并复位。",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_policy_status",
+        "description": "获取后台 policy skill 当前状态、最新执行 action 和累计 chunk 数。",
+        "inputSchema": {"type": "object", "required": [], "properties": {}},
+    },
 ]
