@@ -49,7 +49,7 @@ Execute on robot:
     0 4 -0.01 0.01 -0.07 0 0 0.10
 
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    17 24 0.015 0.00 -0.05 0.015 -0.01 0.02
+    17 2 0.015 0.00 -0.05 0.015 -0.01 0.02
 
 Behavior:
   1. Detect AprilTags.

@@ -79,22 +79,28 @@ def build_task_plan() -> list[str]:
 
 
 def build_mcp_guidance(extra_guidance: str = "") -> str:
-    recipe = """
+    from .tools.mcp_control_recipes import object_mapping_text
+
+    recipe = f"""
 You are controlling the real CoRobot/RoboClaw robot through mcp_control tools.
 
 The concrete tool list and schemas are supplied through the OpenAI tools API.
+Current object-to-tag mapping is centralized in code:
+{object_mapping_text()}
+
 For AprilTag grasp tasks, compose atomic tools in this order:
 detect_tags, get_apriltag_pose, resolve_tag_pick_place_recipe,
 compute_tag_grasp_targets, open_gripper,
 move_eef to approach_camera_m, move_eef to grasp_camera_m, close_gripper,
 move_eef to lift_camera_m.
 
-For AprilTag pick-and-place tasks, first infer the source tag, destination tag,
-and relation from the user's wording. Use relation="on" for assembly/on-top
-tasks and relation="inside" for sorting/inside/container tasks. For these normal
-pick-and-place tasks, prefer prepare_tag_pick_place as the first tool call. It
-refreshes detections, reads fresh source/destination poses, resolves the recipe,
-and computes grasp/place targets in one deterministic step.
+For AprilTag pick-and-place tasks, first infer the source object noun,
+destination object noun, and relation from the user's wording. Use relation="on"
+for assembly/on-top tasks and relation="inside" for sorting/inside/container
+tasks. For these normal pick-and-place tasks, prefer prepare_tag_pick_place as
+the first tool call. It maps object nouns to tag ids, refreshes detections,
+reads fresh source/destination poses, resolves the object-pair recipe, and
+computes grasp/place targets in one deterministic step.
 
 1. If the operator asks for a reset, call reset_robot first and continue only
    after it succeeds.
@@ -102,10 +108,12 @@ and computes grasp/place targets in one deterministic step.
    the requested button_tag_id, base_offset_m, and optional press_interval_s.
    Do not manually pass camera frame, press hold, lift height, or close-gripper
    value; those are fixed by the skill.
-3. For pick-and-place, call prepare_tag_pick_place with source_tag_id,
-   destination_tag_id, and relation. Use the returned grasp_targets and
-   place_targets. Do not hand-code offsets in normal tasks; recipe parameters
-   are owned by the mcp_control recipe registry.
+3. For pick-and-place, call prepare_tag_pick_place with source_object,
+   destination_object, and relation. Use nouns such as "轴承", "底座", "废品",
+   "次品盒", and "良品盒"; do not ask the operator for tag ids. Use the returned
+   grasp_targets and place_targets. Do not hand-code offsets in normal tasks;
+   recipe parameters are owned by the mcp_control recipe registry and are keyed
+   by object nouns, not by tag ids.
 4. If prepare_tag_pick_place reports missing tags, do not move blindly; ask the
    operator to make the missing tag visible.
 5. Execute the grasp sequence with right arm:

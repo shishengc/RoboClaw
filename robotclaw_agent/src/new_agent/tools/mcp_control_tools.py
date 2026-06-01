@@ -16,7 +16,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .mcp_control_recipes import get_tag_pick_place_recipe, recipe_names
+from .mcp_control_recipes import (
+    get_tag_pick_place_recipe,
+    object_mapping,
+    object_name_choices,
+    recipe_names,
+    resolve_pick_place_request,
+)
 from .mcp_control_task_helpers import DEFAULT_TASK_CONFIG_PATH, build_tag_grasp_targets, build_tag_place_targets
 from .tool_types import BaseTool, ToolResult, ToolSchema, ToolStatus
 
@@ -70,7 +76,12 @@ ARM_SCHEMA = {"type": "string", "enum": ["left", "right"]}
 RECIPE_NAME_SCHEMA = {
     "type": "string",
     "enum": recipe_names(),
-    "default": "assembly_on",
+    "default": "bearing_on_base",
+}
+OBJECT_REF_SCHEMA = {
+    "type": "string",
+    "enum": object_name_choices(),
+    "description": "Object noun or alias from the current object-tag map.",
 }
 XYZ_SCHEMA = {
     "type": "array",
@@ -223,24 +234,26 @@ MCP_COMPOSITE_TOOL_SCHEMAS: dict[str, ToolSchema] = {
         name="prepare_tag_pick_place",
         description=(
             "Prepare an AprilTag pick-and-place task in one deterministic step: refresh tag "
-            "detections, read fresh source/destination tag poses, resolve the recipe, and "
-            "compute grasp/place targets. This tool does not move the robot."
+            "detections, map source/destination object nouns to tag ids, read fresh tag poses, "
+            "resolve the object-pair recipe, and compute grasp/place targets. This tool does "
+            "not move the robot. Prefer source_object/destination_object over raw tag ids."
         ),
         parameters=_json_schema(
             {
-                "source_tag_id": {"type": "integer"},
-                "destination_tag_id": {"type": "integer"},
+                "source_object": OBJECT_REF_SCHEMA,
+                "destination_object": OBJECT_REF_SCHEMA,
                 "relation": {
                     "type": "string",
                     "enum": ["on", "inside", "assembly", "sorting"],
-                    "description": "Requested spatial relation between source and destination tags.",
+                    "description": "Requested spatial relation between source and destination objects.",
                 },
                 "recipe_name": RECIPE_NAME_SCHEMA,
                 "retry_detection": {"type": "boolean", "default": True},
             },
-            ["source_tag_id", "destination_tag_id", "relation"],
+            ["source_object", "destination_object", "relation"],
         ),
         returns={
+            "object_mapping": "current noun-to-tag mapping",
             "recipe": "canonical recipe parameters",
             "source_pose": "fresh detected source tag pose",
             "destination_pose": "fresh detected destination tag pose",
@@ -251,22 +264,24 @@ MCP_COMPOSITE_TOOL_SCHEMAS: dict[str, ToolSchema] = {
     "resolve_tag_pick_place_recipe": ToolSchema(
         name="resolve_tag_pick_place_recipe",
         description=(
-            "Resolve the canonical AprilTag pick-and-place recipe for a requested relation. "
-            "Use this before computing grasp/place targets so numeric offsets come from code."
+            "Resolve the canonical AprilTag pick-and-place recipe from object nouns and relation. "
+            "Use this before computing grasp/place targets so numeric offsets come from code. "
+            "Prefer source_object/destination_object over raw tag ids."
         ),
         parameters=_json_schema(
             {
-                "source_tag_id": {"type": "integer"},
-                "destination_tag_id": {"type": "integer"},
+                "source_object": OBJECT_REF_SCHEMA,
+                "destination_object": OBJECT_REF_SCHEMA,
                 "relation": {
                     "type": "string",
                     "enum": ["on", "inside", "assembly", "sorting"],
-                    "description": "Requested spatial relation between source and destination tags.",
+                    "description": "Requested spatial relation between source and destination objects.",
                 },
                 "recipe_name": RECIPE_NAME_SCHEMA,
             },
         ),
         returns={
+            "object_mapping": "current noun-to-tag mapping",
             "recipe_name": "canonical recipe name",
             "source_base_offset_m": "base_link offset for source grasp target",
             "place_base_offset_m": "base_link offset for destination placement target",
@@ -599,11 +614,32 @@ class ResolveTagPickPlaceRecipeTool(BaseTool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         try:
+            resolution = {}
+            has_object_ref = any(
+                kwargs.get(key) is not None
+                for key in (
+                    "source_object",
+                    "destination_object",
+                    "source_name",
+                    "destination_name",
+                    "source_tag_id",
+                    "destination_tag_id",
+                )
+            )
+            if has_object_ref:
+                resolution = resolve_pick_place_request(
+                    source_object=kwargs.get("source_object") or kwargs.get("source_name"),
+                    destination_object=kwargs.get("destination_object") or kwargs.get("destination_name"),
+                    source_tag_id=kwargs.get("source_tag_id"),
+                    destination_tag_id=kwargs.get("destination_tag_id"),
+                )
             recipe = get_tag_pick_place_recipe(
                 kwargs.get("recipe_name"),
                 relation=kwargs.get("relation"),
-                source_tag_id=kwargs.get("source_tag_id"),
-                destination_tag_id=kwargs.get("destination_tag_id"),
+                source_object=resolution.get("source_object") or kwargs.get("source_object"),
+                destination_object=resolution.get("destination_object") or kwargs.get("destination_object"),
+                source_tag_id=resolution.get("source_tag_id") or kwargs.get("source_tag_id"),
+                destination_tag_id=resolution.get("destination_tag_id") or kwargs.get("destination_tag_id"),
             )
         except ValueError as exc:
             return ToolResult(
@@ -614,8 +650,14 @@ class ResolveTagPickPlaceRecipeTool(BaseTool):
             )
 
         data = recipe.to_dict()
+        data["object_mapping"] = object_mapping()
+        data.update(resolution)
+        if "source_object" in kwargs:
+            data["requested_source_object"] = kwargs["source_object"]
+        if "destination_object" in kwargs:
+            data["requested_destination_object"] = kwargs["destination_object"]
         for key in ("source_tag_id", "destination_tag_id", "relation"):
-            if key in kwargs:
+            if key in kwargs and key not in data:
                 data[key] = kwargs[key]
         return ToolResult(
             status=ToolStatus.SUCCESS,
@@ -649,12 +691,18 @@ class PrepareTagPickPlaceTool(BaseTool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         try:
-            source_tag_id = int(kwargs["source_tag_id"])
-            destination_tag_id = int(kwargs["destination_tag_id"])
+            resolution = resolve_pick_place_request(
+                source_object=kwargs.get("source_object") or kwargs.get("source_name"),
+                destination_object=kwargs.get("destination_object") or kwargs.get("destination_name"),
+                source_tag_id=kwargs.get("source_tag_id"),
+                destination_tag_id=kwargs.get("destination_tag_id"),
+            )
+            source_tag_id = int(resolution["source_tag_id"])
+            destination_tag_id = int(resolution["destination_tag_id"])
         except (KeyError, TypeError, ValueError) as exc:
             return ToolResult(
                 status=ToolStatus.FAILED,
-                message="source_tag_id and destination_tag_id are required integers",
+                message=str(exc),
                 data={"error_type": "invalid_argument", "args": kwargs},
                 tool_name=self.name,
             )
@@ -663,6 +711,8 @@ class PrepareTagPickPlaceTool(BaseTool):
             recipe = get_tag_pick_place_recipe(
                 kwargs.get("recipe_name"),
                 relation=kwargs.get("relation"),
+                source_object=resolution.get("source_object"),
+                destination_object=resolution.get("destination_object"),
                 source_tag_id=source_tag_id,
                 destination_tag_id=destination_tag_id,
             )
@@ -710,6 +760,8 @@ class PrepareTagPickPlaceTool(BaseTool):
                     "error_type": "tag_not_visible",
                     "missing_tag_ids": missing,
                     "visible_tag_ids": visible,
+                    "object_mapping": object_mapping(),
+                    **resolution,
                     "source_tag_id": source_tag_id,
                     "destination_tag_id": destination_tag_id,
                     "detections": detections,
@@ -741,10 +793,13 @@ class PrepareTagPickPlaceTool(BaseTool):
         return ToolResult(
             status=ToolStatus.SUCCESS,
             message=(
-                f"prepared tag pick-and-place: source {source_tag_id}, "
-                f"destination {destination_tag_id}, recipe {recipe.name}"
+                f"prepared tag pick-and-place: source {resolution.get('source_display_name') or source_tag_id}, "
+                f"destination {resolution.get('destination_display_name') or destination_tag_id}, "
+                f"recipe {recipe.name}"
             ),
             data={
+                "object_mapping": object_mapping(),
+                **resolution,
                 "source_tag_id": source_tag_id,
                 "destination_tag_id": destination_tag_id,
                 "relation": kwargs.get("relation"),
