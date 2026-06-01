@@ -48,13 +48,13 @@
 4. `get_camera_views` 可用于读取三视角相机图像，供 Agent 做视觉确认。
 5. `detect_tags` 或 `get_apriltag_pose` 获取相机坐标系目标。
 6. 通过 `open_gripper`、`move_eef`、`close_gripper`、`lift_eef` 或 `place_down` 组合执行确定性 primitive。
+7. `switch_scene` 可用于按按钮切换场景，内部固定使用 `head_camera_optical` 和默认按压参数。
 
 示例：
 
 ```json
 {
   "arm": "right",
-  "camera_frame": "head_camera_optical",
   "target_position_camera_m": [0.02, -0.04, 0.32],
   "duration_s": 1.5
 }

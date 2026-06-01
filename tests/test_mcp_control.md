@@ -190,12 +190,12 @@ curl -sS -X POST "${COROBOT_URL}/skill/reset_robot" \
 ```bash
 curl -sS -X POST "${COROBOT_URL}/skill/get_eef_pose" \
   -H "Content-Type: application/json" \
-  -d '{"arm": "right", "camera_frame": "head_camera_optical"}' \
+  -d '{"arm": "right"}' \
   | python3 -m json.tool
 
 curl -sS -X POST "${COROBOT_URL}/skill/get_eef_pose" \
   -H "Content-Type: application/json" \
-  -d '{"arm": "left", "camera_frame": "head_camera_optical"}' \
+  -d '{"arm": "left"}' \
   | python3 -m json.tool
 ```
 
@@ -220,7 +220,6 @@ curl -sS -X POST "${COROBOT_URL}/skill/move_eef" \
   -H "Content-Type: application/json" \
   -d '{
     "arm": "right",
-    "camera_frame": "head_camera_optical",
     "target_position_camera_m": [0.30, 0.02, 0.55],
     "duration_s": 1.0
   }' | python3 -m json.tool
@@ -237,7 +236,7 @@ ARM=right DURATION_S=1.0 bash scripts/test_move_eef.sh 0.30 0.02 0.55
 ```bash
 curl -sS -X POST "${COROBOT_URL}/skill/lift_eef" \
   -H "Content-Type: application/json" \
-  -d '{"arm": "right", "camera_frame": "head_camera_optical", "distance_m": 0.02, "duration_s": 1.0}' \
+  -d '{"arm": "right", "distance_m": 0.02, "duration_s": 1.0}' \
   | python3 -m json.tool
 ```
 
@@ -248,10 +247,24 @@ curl -sS -X POST "${COROBOT_URL}/skill/place_down" \
   -H "Content-Type: application/json" \
   -d '{
     "arm": "right",
-    "camera_frame": "head_camera_optical",
     "down_distance_m": 0.02,
     "duration_s": 1.0,
     "open_after_down": true
+  }' | python3 -m json.tool
+```
+
+切换场景按钮。`switch_scene` 会检测按钮 tag，闭合夹爪，先移动到按钮上方，再向下按压、抬起、等待 `press_interval_s`、再次按压并抬起：
+
+```bash
+curl -sS -X POST "${COROBOT_URL}/skill/switch_scene" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "arm": "right",
+    "button_tag_id": 20,
+    "base_offset_m": [0.0, 0.0, 0.0],
+    "move_duration_s": 2.0,
+    "gripper_duration_s": 0.5,
+    "press_interval_s": 3.0
   }' | python3 -m json.tool
 ```
 
@@ -290,6 +303,11 @@ ARM=right bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh 0 1 0.0 0.0 0
 
 ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
   0 1 0.00 0.00 -0.045 0.0 -0.0015 0.02
+
+ARM=right bash scripts/test_switch_scene_by_tag_base_offset.sh 20 0.00 0.00 0.00
+
+ARM=right PRESS_INTERVAL_S=3.0 EXECUTE_SWITCH_SCENE=1 bash scripts/test_switch_scene_by_tag_base_offset.sh \
+  20 0.00 0.00 0.00
 ```
 
 小步移动前确认：
@@ -298,7 +316,7 @@ ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_of
 - `/skill/status` 显示 `can_compute_T_exec_camera: true`。
 - observation 中有 `head_joint_states` 和 `waist_joint_states`。
 - 首次移动使用 `0.002m` 到 `0.005m`。
-- 不要传 `control_hz` 或 `control_frequency_hz`；控制层固定 30Hz。
+- Skill 接口不暴露 `control_hz`、`control_frequency_hz`、`camera_frame` 以及 switch_scene 的固定抬高/夹爪/按住参数；控制层固定 30Hz，相机 frame 固定为 `head_camera_optical`。
 
 ## 6. 重新生成配置
 

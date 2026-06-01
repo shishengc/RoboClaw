@@ -49,7 +49,7 @@ Execute on robot:
     0 4 -0.01 0.01 -0.07 0 0 0.10
 
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    15 1 0.00 0.00 -0.05 -0.012 -0.015 0.03
+    17 24 0.015 0.00 -0.05 0.015 -0.01 0.02
 
 Behavior:
   1. Detect AprilTags.
@@ -234,7 +234,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(approach_camera),
             "duration_s": move_duration_s,
         },
@@ -244,7 +243,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(grasp_camera),
             "duration_s": move_duration_s,
         },
@@ -259,7 +257,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(lift_camera),
             "duration_s": move_duration_s,
         },
@@ -269,7 +266,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(place_hover_camera),
             "duration_s": move_duration_s,
         },
@@ -279,7 +275,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(place_camera),
             "duration_s": move_duration_s,
         },

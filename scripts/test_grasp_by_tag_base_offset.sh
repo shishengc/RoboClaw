@@ -160,7 +160,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(approach_camera),
             "duration_s": move_duration_s,
         },
@@ -170,7 +169,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(grasp_camera),
             "duration_s": move_duration_s,
         },
@@ -185,7 +183,6 @@ payloads = [
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
             "target_position_camera_m": rounded(lift_camera),
             "duration_s": move_duration_s,
         },

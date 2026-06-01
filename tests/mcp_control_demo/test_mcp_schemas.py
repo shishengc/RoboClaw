@@ -15,6 +15,10 @@ def test_mcp_control_schemas_do_not_expose_control_hz():
     for schema in MCP_CONTROL_TOOL_SCHEMAS:
         assert not _contains_key(schema, "control_hz")
         assert not _contains_key(schema, "control_frequency_hz")
+        assert not _contains_key(schema, "camera_frame")
+        assert not _contains_key(schema, "close_gripper_value")
+        assert not _contains_key(schema, "lift_dz_base_m")
+        assert not _contains_key(schema, "press_hold_s")
 
 
 def test_expected_primitive_tools_are_present():
@@ -31,5 +35,6 @@ def test_expected_primitive_tools_are_present():
         "place_down",
         "open_gripper",
         "close_gripper",
+        "switch_scene",
     } <= names
     assert "grasp_by_tag" not in names

@@ -3,7 +3,6 @@ set -euo pipefail
 
 COROBOT_URL="${COROBOT_URL:-http://localhost:8765}"
 ARM="${ARM:-right}"
-CAMERA_FRAME="${CAMERA_FRAME:-head_camera_optical}"
 DURATION_S="${DURATION_S:-1.0}"
 
 if [[ $# -ne 3 ]]; then
@@ -15,7 +14,6 @@ curl -sS -X POST "${COROBOT_URL}/skill/move_eef" \
   -H "Content-Type: application/json" \
   -d "{
     \"arm\": \"${ARM}\",
-    \"camera_frame\": \"${CAMERA_FRAME}\",
     \"target_position_camera_m\": [$1, $2, $3],
     \"duration_s\": ${DURATION_S}
   }"

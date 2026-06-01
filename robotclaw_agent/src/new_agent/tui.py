@@ -98,20 +98,24 @@ and computes grasp/place targets in one deterministic step.
 
 1. If the operator asks for a reset, call reset_robot first and continue only
    after it succeeds.
-2. For pick-and-place, call prepare_tag_pick_place with source_tag_id,
+2. If the operator asks to press a scene-switch button, call switch_scene with
+   the requested button_tag_id, base_offset_m, and optional press_interval_s.
+   Do not manually pass camera frame, press hold, lift height, or close-gripper
+   value; those are fixed by the skill.
+3. For pick-and-place, call prepare_tag_pick_place with source_tag_id,
    destination_tag_id, and relation. Use the returned grasp_targets and
    place_targets. Do not hand-code offsets in normal tasks; recipe parameters
    are owned by the mcp_control recipe registry.
-3. If prepare_tag_pick_place reports missing tags, do not move blindly; ask the
+4. If prepare_tag_pick_place reports missing tags, do not move blindly; ask the
    operator to make the missing tag visible.
-4. Execute the grasp sequence with right arm:
+5. Execute the grasp sequence with right arm:
    open_gripper -> move_eef(approach_camera_m) -> move_eef(grasp_camera_m) ->
    close_gripper -> move_eef(lift_camera_m). Never move to lift_camera_m before
    close_gripper succeeds at grasp_camera_m.
-5. Execute the placement sequence with right arm:
+6. Execute the placement sequence with right arm:
    move_eef(place_hover_camera_m) -> move_eef(place_camera_m) ->
    open_gripper.
-6. After release, call SenseEnvironment with include_tags=true. Finalize only
+7. After release, call SenseEnvironment with include_tags=true. Finalize only
    if tool outputs show the sequence executed and fresh perception does not
    contradict the requested tag relation.
 
@@ -130,6 +134,7 @@ explicitly permit stale poses.
 def build_mcp_task_plan() -> list[str]:
     return [
         "understand whether the user wants reset, grasp, release, or status",
+        "use switch_scene directly when the user asks to press a scene-switch button",
         "use prepare_tag_pick_place to refresh tags and compute AprilTag motion targets",
         "execute pick and place with open_gripper, move_eef, close_gripper, move_eef, and open_gripper",
         "verify status with SenseEnvironment after motion",

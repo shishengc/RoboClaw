@@ -26,7 +26,6 @@ from mcp_control_demo.control import (
     wrist_to_gripper_center_exec,
 )
 from mcp_control_demo.control.joint_units import normalize_head_joint_states_rad
-from mcp_control_demo.control.timing import validate_no_control_hz
 from mcp_control_demo.perception import AprilTagPerceptionService
 
 
@@ -64,6 +63,7 @@ RESET_CONFIG_KEY_MAP = {
 }
 
 _FK_SOLVER = None
+DEFAULT_CAMERA_FRAME = "head_camera_optical"
 
 
 class RuleControlTask(PolicyTaskBase):
@@ -146,10 +146,11 @@ class RuleControlTask(PolicyTaskBase):
         return self._reset_robot_pose()
 
     @expose_api(method="POST", path="/skill/get_eef_pose")
-    def get_eef_pose(self, arm: str, camera_frame: str = "head_camera_optical") -> dict[str, Any]:
+    def get_eef_pose(self, arm: str) -> dict[str, Any]:
         arm = _validate_arm(arm)
         obs = self._observation()
         calibration = self._calibration_for_observation(obs)
+        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
         pose_exec = _current_eef_pose(obs, arm, calibration.exec_frame)
         if pose_exec is None:
             return {
@@ -246,16 +247,13 @@ class RuleControlTask(PolicyTaskBase):
         self,
         arm: str,
         target_position_camera_m: list[float],
-        camera_frame: str = "head_camera_optical",
         target_orientation_camera_xyzw: list[float] | None = None,
         duration_s: float = 1.0,
         gripper_value: float | None = None,
-        control_hz: float | None = None,
-        control_frequency_hz: float | None = None,
     ) -> dict[str, Any]:
-        self._reject_control_frequency(control_hz, control_frequency_hz)
         obs = self._observation()
         calibration = self._calibration_for_observation(obs)
+        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
         action, meta = build_move_eef_action(
             obs,
             calibration,
@@ -274,14 +272,11 @@ class RuleControlTask(PolicyTaskBase):
         self,
         arm: str,
         distance_m: float,
-        camera_frame: str = "head_camera_optical",
         duration_s: float = 1.0,
-        control_hz: float | None = None,
-        control_frequency_hz: float | None = None,
     ) -> dict[str, Any]:
-        self._reject_control_frequency(control_hz, control_frequency_hz)
         obs = self._observation()
         calibration = self._calibration_for_observation(obs)
+        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
         action, meta = build_lift_eef_action(
             obs,
             calibration,
@@ -298,15 +293,12 @@ class RuleControlTask(PolicyTaskBase):
         self,
         arm: str,
         down_distance_m: float,
-        camera_frame: str = "head_camera_optical",
         duration_s: float = 1.0,
         open_after_down: bool = True,
-        control_hz: float | None = None,
-        control_frequency_hz: float | None = None,
     ) -> dict[str, Any]:
-        self._reject_control_frequency(control_hz, control_frequency_hz)
         obs = self._observation()
         calibration = self._calibration_for_observation(obs)
+        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
         actions, meta = build_place_down_sequence(
             obs,
             calibration,
@@ -325,14 +317,127 @@ class RuleControlTask(PolicyTaskBase):
         arm: str,
         gripper_value: float,
         duration_s: float = 0.5,
-        control_hz: float | None = None,
-        control_frequency_hz: float | None = None,
     ) -> dict[str, Any]:
-        self._reject_control_frequency(control_hz, control_frequency_hz)
         obs = self._observation()
         action, meta = build_gripper_action(obs, arm=arm, gripper_value=gripper_value, duration_s=duration_s)
         self._execute(action, meta["actual_duration_s"])
         return {"action": action, "meta": meta}
+
+    @expose_api(method="POST", path="/skill/switch_scene")
+    def switch_scene(
+        self,
+        arm: str = "right",
+        button_tag_id: int = 20,
+        base_offset_m: list[float] | None = None,
+        move_duration_s: float = 2.0,
+        gripper_duration_s: float = 0.5,
+        press_interval_s: float = 3.0,
+    ) -> dict[str, Any]:
+        arm = _validate_arm(arm)
+        button_tag_id = int(button_tag_id)
+        base_offset = np.asarray(_float_list(base_offset_m or [0.0, 0.0, 0.0], 3), dtype=np.float64)
+        lift_dz_base_m = 0.10
+        press_hold_s = 0.5
+        close_gripper_value = 1.0
+
+        obs = self._observation()
+        detection = self._perception_service().detect_from_observation(obs)
+        if not detection.get("ok"):
+            return {
+                "ok": False,
+                "message": "switch_scene failed before motion: AprilTag detection failed",
+                "error_type": "tag_detection_failed",
+                "detection": detection,
+            }
+
+        detections = detection.get("detections") or []
+        button_tag = next((item for item in detections if int(item.get("tag_id", -1)) == button_tag_id), None)
+        if button_tag is None:
+            return {
+                "ok": False,
+                "message": f"switch_scene failed before motion: button tag {button_tag_id} is not visible",
+                "error_type": "tag_not_visible",
+                "missing_tag_ids": [button_tag_id],
+                "visible_tag_ids": sorted(int(item["tag_id"]) for item in detections if "tag_id" in item),
+                "detections": detections,
+            }
+
+        calibration = self._calibration_for_observation(obs)
+        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
+        tag_camera = np.asarray(_tag_position_camera(button_tag), dtype=np.float64).reshape(3)
+        tag_base = calibration.camera_to_exec_point(tag_camera, camera_frame)
+        button_base = tag_base + base_offset
+        button_above_base = button_base + np.asarray([0.0, 0.0, lift_dz_base_m], dtype=np.float64)
+        button_camera = calibration.exec_to_camera_point(button_base, camera_frame)
+        button_above_camera = calibration.exec_to_camera_point(button_above_base, camera_frame)
+
+        targets = {
+            "tag_position_camera_m": _round_list(tag_camera),
+            "tag_position_base_m": _round_list(tag_base),
+            "button_contact_base_m": _round_list(button_base),
+            "button_contact_camera_m": _round_list(button_camera),
+            "button_above_base_m": _round_list(button_above_base),
+            "button_above_camera_m": _round_list(button_above_camera),
+        }
+
+        segments: list[dict[str, Any]] = []
+
+        def execute_gripper(name: str) -> None:
+            action_obs = self._observation()
+            action, meta = build_gripper_action(
+                action_obs,
+                arm=arm,
+                gripper_value=close_gripper_value,
+                duration_s=gripper_duration_s,
+            )
+            self._execute(action, meta["actual_duration_s"])
+            segments.append({"name": name, "action": action, "meta": meta})
+
+        def execute_move(name: str, target_camera: np.ndarray) -> None:
+            action_obs = self._observation()
+            action_calibration = self._calibration_for_observation(action_obs)
+            action, meta = build_move_eef_action(
+                action_obs,
+                action_calibration,
+                arm=arm,
+                camera_frame=camera_frame,
+                target_position_camera_m=_round_list(target_camera),
+                duration_s=move_duration_s,
+            )
+            self._execute(action, meta["actual_duration_s"])
+            segments.append({"name": name, "action": action, "meta": meta})
+
+        def wait_segment(name: str, duration_s: float) -> None:
+            if duration_s <= 0.0:
+                return
+            time.sleep(duration_s)
+            segments.append({"name": name, "wait_s": duration_s})
+
+        execute_gripper("close_gripper")
+        execute_move("move_to_button_above_1", button_above_camera)
+        execute_move("move_down_to_button_press_1", button_camera)
+        wait_segment("hold_after_press_1", press_hold_s)
+        execute_move("lift_after_press_1", button_above_camera)
+        wait_segment("wait_between_presses", press_interval_s)
+        execute_move("move_down_to_button_press_2", button_camera)
+        wait_segment("hold_after_press_2", press_hold_s)
+        execute_move("lift_after_press_2", button_above_camera)
+
+        return {
+            "ok": True,
+            "arm": arm,
+            "button_tag_id": button_tag_id,
+            "camera_frame": camera_frame,
+            "base_offset_m": _round_list(base_offset),
+            "lift_dz_base_m": lift_dz_base_m,
+            "press_hold_s": press_hold_s,
+            "press_interval_s": press_interval_s,
+            "close_gripper_value": float(close_gripper_value),
+            "button_tag": button_tag,
+            "targets": targets,
+            "sequence": [segment["name"] for segment in segments],
+            "segments": segments,
+        }
 
     def _observation(self):
         if self._env is None:
@@ -480,14 +585,6 @@ class RuleControlTask(PolicyTaskBase):
             "duration_s": action.trajectory_reference_time,
         }
 
-    def _reject_control_frequency(self, control_hz: float | None, control_frequency_hz: float | None):
-        payload = {}
-        if control_hz is not None:
-            payload["control_hz"] = control_hz
-        if control_frequency_hz is not None:
-            payload["control_frequency_hz"] = control_frequency_hz
-        validate_no_control_hz(payload)
-
 
 def _copy_reset_pose(pose: dict[str, Any]) -> dict[str, list[float] | None]:
     copied: dict[str, list[float] | None] = {}
@@ -566,6 +663,22 @@ def _float_list(value: Any, expected_len: int) -> list[float] | None:
     if len(result) != expected_len:
         raise ValueError(f"expected {expected_len} values, got {len(result)}")
     return result
+
+
+def _tag_position_camera(tag_pose: dict[str, Any]) -> list[float]:
+    for key in ("position_camera_m", "translation_m"):
+        value = tag_pose.get(key)
+        if value is not None:
+            return _float_list(value, 3) or []
+    camera_pose = tag_pose.get("camera_pose") or {}
+    value = _get(camera_pose, "position_m")
+    if value is not None:
+        return _float_list(value, 3) or []
+    raise ValueError("tag pose does not contain a camera-frame position")
+
+
+def _round_list(values: Any) -> list[float]:
+    return [round(float(value), 6) for value in np.asarray(values, dtype=np.float64).reshape(-1)]
 
 
 def _camera_views_from_observation(

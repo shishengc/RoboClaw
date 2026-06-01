@@ -17,7 +17,6 @@ MCP_CONTROL_TOOL_SCHEMAS = [
             "required": ["arm"],
             "properties": {
                 "arm": {"type": "string", "enum": ["left", "right"]},
-                "camera_frame": {"type": "string", "default": "head_camera_optical"},
             },
         },
     },
@@ -71,7 +70,6 @@ MCP_CONTROL_TOOL_SCHEMAS = [
             "required": ["arm", "target_position_camera_m"],
             "properties": {
                 "arm": {"type": "string", "enum": ["left", "right"]},
-                "camera_frame": {"type": "string", "default": "head_camera_optical"},
                 "target_position_camera_m": {
                     "type": "array",
                     "items": {"type": "number"},
@@ -97,7 +95,6 @@ MCP_CONTROL_TOOL_SCHEMAS = [
             "required": ["arm", "distance_m"],
             "properties": {
                 "arm": {"type": "string", "enum": ["left", "right"]},
-                "camera_frame": {"type": "string", "default": "head_camera_optical"},
                 "distance_m": {"type": "number"},
                 "duration_s": {"type": "number", "default": 1.0},
             },
@@ -111,7 +108,6 @@ MCP_CONTROL_TOOL_SCHEMAS = [
             "required": ["arm", "down_distance_m"],
             "properties": {
                 "arm": {"type": "string", "enum": ["left", "right"]},
-                "camera_frame": {"type": "string", "default": "head_camera_optical"},
                 "down_distance_m": {"type": "number"},
                 "duration_s": {"type": "number", "default": 1.0},
                 "open_after_down": {"type": "boolean", "default": True},
@@ -139,6 +135,28 @@ MCP_CONTROL_TOOL_SCHEMAS = [
             "properties": {
                 "arm": {"type": "string", "enum": ["left", "right"]},
                 "duration_s": {"type": "number", "default": 0.5},
+            },
+        },
+    },
+    {
+        "name": "switch_scene",
+        "description": "按 AprilTag 按钮切换场景：内部使用 head_camera_optical，按压间隔 press_interval_s 可控。",
+        "inputSchema": {
+            "type": "object",
+            "required": [],
+            "properties": {
+                "arm": {"type": "string", "enum": ["left", "right"], "default": "right"},
+                "button_tag_id": {"type": "integer", "default": 20},
+                "base_offset_m": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "default": [0.0, 0.0, 0.0],
+                },
+                "move_duration_s": {"type": "number", "default": 2.0},
+                "gripper_duration_s": {"type": "number", "default": 0.5},
+                "press_interval_s": {"type": "number", "default": 3.0},
             },
         },
     },

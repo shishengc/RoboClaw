@@ -35,7 +35,6 @@ actual_duration_s = num_steps / 30
 ```json
 {
   "arm": "right",
-  "camera_frame": "head_camera_optical",
   "duration_s": 1.5
 }
 ```
@@ -52,7 +51,6 @@ actual_duration_s = num_steps / 30
 ```json
 {
   "arm": "right",
-  "camera_frame": "head_camera_optical",
   "target_position_camera_m": [0.02, -0.04, 0.32],
   "duration_s": 1.5
 }
@@ -63,7 +61,6 @@ actual_duration_s = num_steps / 30
 ```json
 {
   "arm": "left",
-  "camera_frame": "head_camera_optical",
   "distance_m": 0.08,
   "duration_s": 1.0
 }
@@ -74,7 +71,6 @@ actual_duration_s = num_steps / 30
 ```json
 {
   "arm": "right",
-  "camera_frame": "head_camera_optical",
   "down_distance_m": 0.08,
   "open_after_down": true,
   "duration_s": 1.0

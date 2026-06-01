@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import math
 
 import numpy as np
@@ -27,6 +28,17 @@ class FakeEnv:
         return self.observation
 
 
+class FakePerception:
+    def __init__(self, detections):
+        self.detections = detections
+
+    def detect_from_observation(self, observation):
+        return {"ok": True, "detections": self.detections}
+
+    def status(self):
+        return {"cached_tag_ids": [int(item["tag_id"]) for item in self.detections]}
+
+
 def test_reset_robot_is_exposed_and_uses_safe_order(tmp_path):
     config_path = tmp_path / "task.yaml"
     config_path.write_text(
@@ -50,6 +62,7 @@ reset_pose:
     assert "/skill/reset_robot" in paths
     assert "/skill/get_eef_pose" in paths
     assert "/skill/camera_views" in paths
+    assert "/skill/switch_scene" in paths
 
     result = task.reset_robot()
 
@@ -67,6 +80,24 @@ reset_pose:
 
 def test_mcp_control_skill_task_is_compatible_alias():
     assert issubclass(McpControlSkillTask, RuleControlTask)
+
+
+def test_rule_control_skill_apis_do_not_expose_control_frequency_arguments(tmp_path):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    task = RuleControlTask(str(config_path))
+
+    hidden_parameters = {
+        "camera_frame",
+        "control_hz",
+        "control_frequency_hz",
+        "close_gripper_value",
+        "lift_dz_base_m",
+        "press_hold_s",
+    }
+    for api in task.get_exposed_apis():
+        parameters = inspect.signature(api["handler"]).parameters
+        assert hidden_parameters.isdisjoint(parameters)
 
 
 def test_get_eef_pose_returns_exec_and_camera_position(tmp_path):
@@ -198,3 +229,89 @@ def test_camera_views_saves_rgb_observation_as_correct_jpg_colors(tmp_path):
     assert encoded_bgr is not None
     assert int(encoded_bgr[0, 0, 2]) > 240
     assert int(encoded_bgr[0, 0, 0]) < 20
+
+
+def test_switch_scene_moves_above_then_presses_twice(tmp_path, monkeypatch):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    observation = {
+        "states": {
+            "end_pose": {
+                "base_link": {
+                    "right_arm": {
+                        "position": [0.0, 0.0, 0.0],
+                        "orientation": [0.0, 0.0, 0.0, 1.0],
+                    }
+                }
+            },
+            "gripper_states": [0.0, 0.0],
+        }
+    }
+    task = RuleControlTask(str(config_path))
+    task._calibration = CalibrationConfig.identity_for_tests()
+    task._perception = FakePerception(
+        [{"tag_id": 20, "position_camera_m": [0.2, 0.3, 0.4], "timestamp_s": 1.0}]
+    )
+    env = FakeEnv(observation)
+    task._env = env
+    sleeps = []
+    monkeypatch.setattr("corobot.policy_tasks.rule_control_task.time.sleep", lambda duration: sleeps.append(duration))
+
+    result = task.switch_scene(
+        arm="right",
+        button_tag_id=20,
+        base_offset_m=[0.01, -0.02, 0.03],
+        move_duration_s=0.1,
+        gripper_duration_s=0.1,
+        press_interval_s=1.25,
+    )
+
+    assert result["ok"] is True
+    assert result["targets"]["button_contact_camera_m"] == pytest.approx([0.21, 0.28, 0.43])
+    assert result["targets"]["button_above_camera_m"] == pytest.approx([0.21, 0.28, 0.53])
+    assert result["sequence"] == [
+        "close_gripper",
+        "move_to_button_above_1",
+        "move_down_to_button_press_1",
+        "hold_after_press_1",
+        "lift_after_press_1",
+        "wait_between_presses",
+        "move_down_to_button_press_2",
+        "hold_after_press_2",
+        "lift_after_press_2",
+    ]
+    assert len(env.calls) == 6
+    move_targets = [
+        segment["meta"]["target_position_camera_m"]
+        for segment in result["segments"]
+        if segment["name"].startswith(("move_", "lift_"))
+    ]
+    expected_targets = [
+        [0.21, 0.28, 0.53],
+        [0.21, 0.28, 0.43],
+        [0.21, 0.28, 0.53],
+        [0.21, 0.28, 0.43],
+        [0.21, 0.28, 0.53],
+    ]
+    for target, expected in zip(move_targets, expected_targets, strict=True):
+        assert target == pytest.approx(expected)
+    assert result["press_interval_s"] == pytest.approx(1.25)
+    assert sleeps == pytest.approx([0.5, 1.25, 0.5])
+
+
+def test_switch_scene_does_not_move_when_button_tag_missing(tmp_path):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    task = RuleControlTask(str(config_path))
+    task._calibration = CalibrationConfig.identity_for_tests()
+    task._perception = FakePerception([{"tag_id": 21, "position_camera_m": [0.0, 0.0, 0.5]}])
+    env = FakeEnv({"states": {}})
+    task._env = env
+
+    result = task.switch_scene(button_tag_id=20)
+
+    assert result["ok"] is False
+    assert result["error_type"] == "tag_not_visible"
+    assert result["missing_tag_ids"] == [20]
+    assert result["visible_tag_ids"] == [21]
+    assert env.calls == []

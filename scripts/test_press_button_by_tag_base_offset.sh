@@ -11,6 +11,7 @@ GRIPPER_DURATION_S="${GRIPPER_DURATION_S:-0.5}"
 BUTTON_TAG_ID="${BUTTON_TAG_ID:-20}"
 LIFT_DZ_BASE_M="${LIFT_DZ_BASE_M:-0.10}"
 PRESS_HOLD_S="${PRESS_HOLD_S:-0.5}"
+PRESS_INTERVAL_S="${PRESS_INTERVAL_S:-1.0}"
 CLOSE_GRIPPER_VALUE="${CLOSE_GRIPPER_VALUE:-1.0}"
 EXECUTE_BUTTON_PRESS="${EXECUTE_BUTTON_PRESS:-0}"
 
@@ -27,20 +28,20 @@ Usage:
   ARM=right bash scripts/test_press_button_by_tag_base_offset.sh \
     <tag_id> <dx_base_m> <dy_base_m> <dz_base_m>
 
-Example dry-run:
+Example dry-run (plans two presses with 1s between them):
   ARM=right bash scripts/test_press_button_by_tag_base_offset.sh
   ARM=right bash scripts/test_press_button_by_tag_base_offset.sh 20 0.00 0.00 0.00
 
-Execute on robot:
-  ARM=right EXECUTE_BUTTON_PRESS=1 bash scripts/test_press_button_by_tag_base_offset.sh \
-    20 0.00 0.00 0.00
+Execute on robot (move above, press down, lift, wait 1s, press down again, lift):
+  ARM=right PRESS_INTERVAL_S=1.0 EXECUTE_BUTTON_PRESS=1 bash scripts/test_press_button_by_tag_base_offset.sh \
+    21 0.00 0.00 0.01
 
 Behavior:
   1. Detect AprilTags and read the requested button tag, default tag 20.
   2. Close the selected gripper.
-  3. Move the configured gripper-center TCP directly to the button press point.
-  4. Hold there for PRESS_HOLD_S.
-  5. Lift upward in base_link by LIFT_DZ_BASE_M.
+  3. Move the configured gripper-center TCP to the point above the button.
+  4. Move down to the button press point, hold for PRESS_HOLD_S, then lift back above.
+  5. Wait PRESS_INTERVAL_S, then press down and lift once more.
 
 Environment:
   COROBOT_URL             default http://localhost:8765
@@ -50,8 +51,9 @@ Environment:
   TASK_CONFIG_PATH        default .a2d_pkg/corobot/config/rule_control_task_config.yml
   MOVE_DURATION_S         default 2.0
   GRIPPER_DURATION_S      default 0.5
-  LIFT_DZ_BASE_M          default 0.10, base_link +Z after pressing
+  LIFT_DZ_BASE_M          default 0.10, button-above height and base_link +Z after pressing
   PRESS_HOLD_S            default 0.5, seconds to wait between press and lift
+  PRESS_INTERVAL_S        default 1.0, seconds to wait between the two presses
   CLOSE_GRIPPER_VALUE     default 1.0
   EXECUTE_BUTTON_PRESS    default 0; set 1 to execute
 
@@ -94,7 +96,7 @@ fi
 export PYTHONPATH="/home/ck/RoboClaw/src:/home/ck/RoboClaw/.a2d_pkg:${PYTHONPATH:-}"
 export COROBOT_URL ARM CAMERA_FRAME TASK_CONFIG_PATH
 export MOVE_DURATION_S GRIPPER_DURATION_S BUTTON_TAG_ID
-export LIFT_DZ_BASE_M PRESS_HOLD_S CLOSE_GRIPPER_VALUE EXECUTE_BUTTON_PRESS
+export LIFT_DZ_BASE_M PRESS_HOLD_S PRESS_INTERVAL_S CLOSE_GRIPPER_VALUE EXECUTE_BUTTON_PRESS
 
 "${PYTHON_BIN}" - "$1" "$2" "$3" <<'PY'
 from __future__ import annotations
@@ -131,6 +133,7 @@ gripper_duration_s = float(os.environ["GRIPPER_DURATION_S"])
 button_tag_id = int(os.environ["BUTTON_TAG_ID"])
 lift_dz_base_m = float(os.environ["LIFT_DZ_BASE_M"])
 press_hold_s = float(os.environ["PRESS_HOLD_S"])
+press_interval_s = float(os.environ["PRESS_INTERVAL_S"])
 close_gripper_value = float(os.environ["CLOSE_GRIPPER_VALUE"])
 execute = os.environ["EXECUTE_BUTTON_PRESS"] == "1"
 
@@ -205,10 +208,10 @@ tag_camera = np.asarray(button_tag["position_camera_m"], dtype=np.float64).resha
 tag_base = calibration.camera_to_exec_point(tag_camera, camera_frame)
 
 button_base = tag_base + base_offset
-lift_base = button_base + np.asarray([0.0, 0.0, lift_dz_base_m], dtype=np.float64)
+button_above_base = button_base + np.asarray([0.0, 0.0, lift_dz_base_m], dtype=np.float64)
 
 button_camera = calibration.exec_to_camera_point(button_base, camera_frame)
-lift_camera = calibration.exec_to_camera_point(lift_base, camera_frame)
+button_above_camera = calibration.exec_to_camera_point(button_above_base, camera_frame)
 
 payloads = [
     (
@@ -217,22 +220,47 @@ payloads = [
         {"arm": arm, "gripper_value": close_gripper_value, "duration_s": gripper_duration_s},
     ),
     (
-        "move_to_button_press",
+        "move_to_button_above_1",
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
+            "target_position_camera_m": rounded(button_above_camera),
+            "duration_s": move_duration_s,
+        },
+    ),
+    (
+        "move_down_to_button_press_1",
+        "/skill/move_eef",
+        {
+            "arm": arm,
             "target_position_camera_m": rounded(button_camera),
             "duration_s": move_duration_s,
         },
     ),
     (
-        "lift_after_press",
+        "lift_after_press_1",
         "/skill/move_eef",
         {
             "arm": arm,
-            "camera_frame": camera_frame,
-            "target_position_camera_m": rounded(lift_camera),
+            "target_position_camera_m": rounded(button_above_camera),
+            "duration_s": move_duration_s,
+        },
+    ),
+    (
+        "move_down_to_button_press_2",
+        "/skill/move_eef",
+        {
+            "arm": arm,
+            "target_position_camera_m": rounded(button_camera),
+            "duration_s": move_duration_s,
+        },
+    ),
+    (
+        "lift_after_press_2",
+        "/skill/move_eef",
+        {
+            "arm": arm,
+            "target_position_camera_m": rounded(button_above_camera),
             "duration_s": move_duration_s,
         },
     ),
@@ -247,18 +275,26 @@ plan = {
     "base_offset_m": rounded(base_offset),
     "lift_dz_base_m": lift_dz_base_m,
     "press_hold_s": press_hold_s,
+    "press_interval_s": press_interval_s,
     "tag_position_camera_m": rounded(tag_camera),
     "tag_position_base_m": rounded(tag_base),
     "button_contact_base_m": rounded(button_base),
     "button_contact_camera_m": rounded(button_camera),
-    "lift_position_base_m": rounded(lift_base),
-    "lift_position_camera_m": rounded(lift_camera),
+    "button_above_base_m": rounded(button_above_base),
+    "button_above_camera_m": rounded(button_above_camera),
+    "lift_position_base_m": rounded(button_above_base),
+    "lift_position_camera_m": rounded(button_above_camera),
     "payloads": [{"name": name, "path": path, "payload": payload} for name, path, payload in payloads],
     "sequence": [
         "close_gripper",
-        "move_to_button_press",
+        "move_to_button_above_1",
+        "move_down_to_button_press_1",
         f"hold {press_hold_s:.3f}s",
-        "lift_after_press",
+        "lift_after_press_1",
+        f"wait {press_interval_s:.3f}s",
+        "move_down_to_button_press_2",
+        f"hold {press_hold_s:.3f}s",
+        "lift_after_press_2",
     ],
 }
 print(json.dumps(plan, indent=2, ensure_ascii=False))
@@ -271,7 +307,10 @@ for name, path, payload in payloads:
     print(f"\n>>> {name}: {path}", file=sys.stderr)
     result = post(path, payload)
     print(json.dumps({"name": name, "result": result}, indent=2, ensure_ascii=False))
-    if name == "move_to_button_press" and press_hold_s > 0:
+    if name.startswith("move_down_to_button_press_") and press_hold_s > 0:
         print(f"\n>>> hold_after_press: {press_hold_s:.3f}s", file=sys.stderr)
         time.sleep(press_hold_s)
+    if name == "lift_after_press_1" and press_interval_s > 0:
+        print(f"\n>>> wait_between_presses: {press_interval_s:.3f}s", file=sys.stderr)
+        time.sleep(press_interval_s)
 PY

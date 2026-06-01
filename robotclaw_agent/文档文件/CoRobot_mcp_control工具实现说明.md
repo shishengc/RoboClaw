@@ -540,7 +540,6 @@ POST /skill/move_eef
 ```json
 {
   "arm": "right",
-  "camera_frame": "head_camera_optical",
   "target_position_camera_m": [0.20, -0.10, 0.45],
   "duration_s": 1.0
 }
@@ -555,7 +554,7 @@ POST /skill/move_eef
 }
 ```
 
-`control_hz` 和 `control_frequency_hz` 不允许传。控制频率固定 30Hz。
+Skill 接口不暴露 `control_hz` 和 `control_frequency_hz`。控制频率固定 30Hz。
 
 ### 8.2 CoRobot 实现入口
 
@@ -565,14 +564,10 @@ def move_eef(
     self,
     arm: str,
     target_position_camera_m: list[float],
-    camera_frame: str = "head_camera_optical",
     target_orientation_camera_xyzw: list[float] | None = None,
     duration_s: float = 1.0,
     gripper_value: float | None = None,
-    control_hz: float | None = None,
-    control_frequency_hz: float | None = None,
 ) -> dict[str, Any]:
-    self._reject_control_frequency(control_hz, control_frequency_hz)
     obs = self._observation()
     calibration = self._calibration_for_observation(obs)
     action, meta = build_move_eef_action(...)
@@ -586,7 +581,6 @@ def move_eef(
 
 ```text
 move_eef()
--> _reject_control_frequency()
 -> _observation()
    -> self._env.get_observation()
 -> _calibration_for_observation(obs)
@@ -734,7 +728,6 @@ POST /skill/place_down
 ```json
 {
   "arm": "right",
-  "camera_frame": "head_camera_optical",
   "down_distance_m": 0.08,
   "duration_s": 1.0,
   "open_after_down": true
@@ -749,13 +742,9 @@ def place_down(
     self,
     arm: str,
     down_distance_m: float,
-    camera_frame: str = "head_camera_optical",
     duration_s: float = 1.0,
     open_after_down: bool = True,
-    control_hz: float | None = None,
-    control_frequency_hz: float | None = None,
 ) -> dict[str, Any]:
-    self._reject_control_frequency(control_hz, control_frequency_hz)
     obs = self._observation()
     calibration = self._calibration_for_observation(obs)
     actions, meta = build_place_down_sequence(...)
@@ -846,10 +835,7 @@ def gripper(
     arm: str,
     gripper_value: float,
     duration_s: float = 0.5,
-    control_hz: float | None = None,
-    control_frequency_hz: float | None = None,
 ) -> dict[str, Any]:
-    self._reject_control_frequency(control_hz, control_frequency_hz)
     obs = self._observation()
     action, meta = build_gripper_action(obs, arm=arm, gripper_value=gripper_value, duration_s=duration_s)
     self._execute(action, meta["actual_duration_s"])
@@ -1235,7 +1221,6 @@ det.pose_R  # tag 在相机坐标系下的旋转矩阵
 |---|---|
 | `arm` | `"left"` 或 `"right"`，指定移动哪只机械臂。 |
 | `target_position_camera_m` | 目标夹爪中心 TCP 在相机坐标系下的位置 `[x, y, z]`，单位米。 |
-| `camera_frame` | 输入目标点所属相机坐标系，默认 `head_camera_optical`。当前实现只支持配置里的相机 frame。 |
 | `target_orientation_camera_xyzw` | 可选。目标 wrist/link7 姿态，四元数 `[x, y, z, w]`，相机坐标系。缺省时保留当前 EEF 姿态；如果当前姿态也不可用，会退化到单位四元数。 |
 | `duration_s` | 期望运动时长。实际会按 30Hz 向上取整为 `actual_duration_s`。 |
 | `gripper_value` | 可选。若提供，会在同一个 action 中附带夹爪目标值，`0.0=open`，`1.0=close`。通常演示中更推荐单独用 `open_gripper` / `close_gripper`。 |
@@ -1271,7 +1256,6 @@ det.pose_R  # tag 在相机坐标系下的旋转矩阵
 |---|---|
 | `arm` | `"left"` 或 `"right"`。 |
 | `down_distance_m` | 沿 `camera_place_down_axis` 移动的距离，单位米。 |
-| `camera_frame` | 当前动作使用的相机 frame，默认 `head_camera_optical`。 |
 | `duration_s` | 下放动作时长。 |
 | `open_after_down` | 下放后是否自动打开夹爪，默认 `true`。 |
 

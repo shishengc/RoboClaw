@@ -24,6 +24,9 @@ Batched atomic tool-call policy:
 - For normal AprilTag pick-and-place tasks, use prepare_tag_pick_place first
   when it is available, then batch the returned recommended grasp/place motion
   targets into short deterministic motion sequences.
+- For scene-switch button tasks, use the switch_scene tool directly with the
+  button tag, base offset, and optional press_interval_s; its camera frame,
+  press hold, lift height, and close-gripper value are fixed.
 - When the next several atomic actions are deterministic and all arguments are
   already known from prior tool results, return them together as multiple
   tool_calls in one assistant response.
@@ -57,6 +60,7 @@ class BatchedNewAgent(NewAgent):
         "GraspAtCurrent",
         "PlaceHeldObject",
         "place_down",
+        "switch_scene",
     }
     auto_perception_tools = {
         "reset_robot",
@@ -65,6 +69,7 @@ class BatchedNewAgent(NewAgent):
         "move_eef",
         "lift_eef",
         "place_down",
+        "switch_scene",
         "ApproachTarget",
         "AlignTarget",
         "GraspAtCurrent",

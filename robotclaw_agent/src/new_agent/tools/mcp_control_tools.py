@@ -34,6 +34,7 @@ SKILL_TOOL_ENDPOINTS: dict[str, tuple[str, str]] = {
     "place_down": ("POST", "/skill/place_down"),
     "open_gripper": ("POST", "/skill/gripper"),
     "close_gripper": ("POST", "/skill/gripper"),
+    "switch_scene": ("POST", "/skill/switch_scene"),
 }
 
 DEFAULT_MCP_CONTROL_TOOL_NAMES = tuple(SKILL_TOOL_ENDPOINTS)
@@ -47,6 +48,7 @@ DEFAULT_MCP_LLM_TOOL_NAMES = (
     "close_gripper",
     "move_eef",
     "place_down",
+    "switch_scene",
 )
 DEFAULT_CALIBRATION_PATH = DEFAULT_TASK_CONFIG_PATH
 GRASP_TARGET_TOLERANCE_M = 0.003
@@ -65,7 +67,6 @@ def _json_schema(
 
 
 ARM_SCHEMA = {"type": "string", "enum": ["left", "right"]}
-CAMERA_FRAME_SCHEMA = {"type": "string", "default": "head_camera_optical"}
 RECIPE_NAME_SCHEMA = {
     "type": "string",
     "enum": recipe_names(),
@@ -104,7 +105,6 @@ MCP_CONTROL_TOOL_SCHEMAS: dict[str, ToolSchema] = {
         parameters=_json_schema(
             {
                 "arm": ARM_SCHEMA,
-                "camera_frame": CAMERA_FRAME_SCHEMA,
             },
             ["arm"],
         ),
@@ -137,7 +137,6 @@ MCP_CONTROL_TOOL_SCHEMAS: dict[str, ToolSchema] = {
         parameters=_json_schema(
             {
                 "arm": ARM_SCHEMA,
-                "camera_frame": CAMERA_FRAME_SCHEMA,
                 "target_position_camera_m": XYZ_SCHEMA,
                 "target_orientation_camera_xyzw": QUAT_XYZW_SCHEMA,
                 "duration_s": {"type": "number", "default": 1.0},
@@ -153,7 +152,6 @@ MCP_CONTROL_TOOL_SCHEMAS: dict[str, ToolSchema] = {
         parameters=_json_schema(
             {
                 "arm": ARM_SCHEMA,
-                "camera_frame": CAMERA_FRAME_SCHEMA,
                 "distance_m": {"type": "number"},
                 "duration_s": {"type": "number", "default": 1.0},
             },
@@ -167,7 +165,6 @@ MCP_CONTROL_TOOL_SCHEMAS: dict[str, ToolSchema] = {
         parameters=_json_schema(
             {
                 "arm": ARM_SCHEMA,
-                "camera_frame": CAMERA_FRAME_SCHEMA,
                 "down_distance_m": {"type": "number"},
                 "duration_s": {"type": "number", "default": 1.0},
                 "open_after_down": {"type": "boolean", "default": True},
@@ -197,6 +194,24 @@ MCP_CONTROL_TOOL_SCHEMAS: dict[str, ToolSchema] = {
                 "duration_s": {"type": "number", "default": 0.5},
             },
             ["arm"],
+        ),
+        returns={},
+    ),
+    "switch_scene": ToolSchema(
+        name="switch_scene",
+        description=(
+            "Press a scene-switch button by AprilTag: detect the button tag, close the gripper, "
+            "move above it, press, lift, wait press_interval_s, then press and lift again."
+        ),
+        parameters=_json_schema(
+            {
+                "arm": {**ARM_SCHEMA, "default": "right"},
+                "button_tag_id": {"type": "integer", "default": 20},
+                "base_offset_m": {**XYZ_SCHEMA, "default": [0.0, 0.0, 0.0]},
+                "move_duration_s": {"type": "number", "default": 2.0},
+                "gripper_duration_s": {"type": "number", "default": 0.5},
+                "press_interval_s": {"type": "number", "default": 3.0},
+            },
         ),
         returns={},
     ),
@@ -329,7 +344,6 @@ class McpControlRecipeState:
         self.expected_lift_target_camera_m: list[float] | None = None
         self.expected_grasp_tag_id: int | None = None
         self.last_move_target_by_arm: dict[str, list[float]] = {}
-        self.last_move_camera_frame_by_arm: dict[str, str] = {}
 
     def set_expected_grasp(
         self,
@@ -342,9 +356,8 @@ class McpControlRecipeState:
         self.expected_grasp_target_camera_m = [float(v) for v in grasp_camera_m]
         self.expected_lift_target_camera_m = [float(v) for v in lift_camera_m]
 
-    def record_move(self, *, arm: str, camera_frame: str, target_camera_m: list[float]) -> None:
+    def record_move(self, *, arm: str, target_camera_m: list[float]) -> None:
         self.last_move_target_by_arm[arm] = [float(v) for v in target_camera_m]
-        self.last_move_camera_frame_by_arm[arm] = camera_frame
 
     def clear_expected_grasp(self) -> None:
         self.expected_grasp_target_camera_m = None
@@ -355,7 +368,6 @@ class McpControlRecipeState:
         self,
         *,
         arm: str,
-        camera_frame: str,
         target_camera_m: list[float],
     ) -> ToolResult | None:
         expected_grasp = self.expected_grasp_target_camera_m
@@ -383,7 +395,6 @@ class McpControlRecipeState:
                     "tool": "move_eef",
                     "arguments": {
                         "arm": arm,
-                        "camera_frame": camera_frame,
                         "target_position_camera_m": expected_grasp,
                     },
                 },
@@ -418,7 +429,6 @@ class McpControlRecipeState:
                     "tool": "move_eef",
                     "arguments": {
                         "arm": arm,
-                        "camera_frame": self.last_move_camera_frame_by_arm.get(arm, "head_camera_optical"),
                         "target_position_camera_m": expected,
                     },
                 },
@@ -473,11 +483,12 @@ class McpControlAgentTool(BaseTool):
             if isinstance(target, list) and len(target) == 3:
                 order_error = self.recipe_state.validate_move_eef(
                     arm=str(payload.get("arm") or ""),
-                    camera_frame=str(payload.get("camera_frame") or "head_camera_optical"),
                     target_camera_m=_vector(target, 3),
                 )
                 if order_error is not None:
                     return order_error
+
+        _drop_fixed_skill_arguments(payload)
 
         method, path = SKILL_TOOL_ENDPOINTS[self.name]
         result = await asyncio.to_thread(self._request, method, path, payload)
@@ -489,7 +500,6 @@ class McpControlAgentTool(BaseTool):
                 if arm and isinstance(target, list) and len(target) == 3:
                     self.recipe_state.record_move(
                         arm=arm,
-                        camera_frame=str(payload.get("camera_frame") or "head_camera_optical"),
                         target_camera_m=_vector(target, 3),
                     )
             elif self.name == "close_gripper":
@@ -506,9 +516,10 @@ class McpControlAgentTool(BaseTool):
             headers={"Content-Type": "application/json"},
             method=method,
         )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with opener.open(request, timeout=self.timeout_seconds) as response:
                 raw = response.read().decode("utf-8", errors="replace")
                 http_status = int(response.status)
         except urllib.error.HTTPError as exc:
@@ -1051,6 +1062,16 @@ def _vector(value: Any, expected_len: int) -> list[float]:
     if len(result) != expected_len:
         raise ValueError(f"expected {expected_len} values, got {len(result)}")
     return result
+
+
+def _drop_fixed_skill_arguments(payload: dict[str, Any]) -> None:
+    for key in (
+        "camera_frame",
+        "close_gripper_value",
+        "lift_dz_base_m",
+        "press_hold_s",
+    ):
+        payload.pop(key, None)
 
 
 def _vectors_close(a: list[float], b: list[float], tolerance: float) -> bool:

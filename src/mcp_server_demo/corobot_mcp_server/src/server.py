@@ -34,6 +34,7 @@ SKILL_TOOL_ENDPOINTS = {
     "place_down": ("POST", "/skill/place_down"),
     "open_gripper": ("POST", "/skill/gripper"),
     "close_gripper": ("POST", "/skill/gripper"),
+    "switch_scene": ("POST", "/skill/switch_scene"),
 }
 
 
@@ -187,7 +188,6 @@ def _mcp_control_tools() -> list[types.Tool]:
                 "required": ["arm"],
                 "properties": {
                     "arm": {"type": "string", "enum": ["left", "right"]},
-                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
                 },
             },
         ),
@@ -241,7 +241,6 @@ def _mcp_control_tools() -> list[types.Tool]:
                 "required": ["arm", "target_position_camera_m"],
                 "properties": {
                     "arm": {"type": "string", "enum": ["left", "right"]},
-                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
                     "target_position_camera_m": {
                         "type": "array",
                         "items": {"type": "number"},
@@ -267,7 +266,6 @@ def _mcp_control_tools() -> list[types.Tool]:
                 "required": ["arm", "distance_m"],
                 "properties": {
                     "arm": {"type": "string", "enum": ["left", "right"]},
-                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
                     "distance_m": {"type": "number"},
                     "duration_s": {"type": "number", "default": 1.0},
                 },
@@ -281,7 +279,6 @@ def _mcp_control_tools() -> list[types.Tool]:
                 "required": ["arm", "down_distance_m"],
                 "properties": {
                     "arm": {"type": "string", "enum": ["left", "right"]},
-                    "camera_frame": {"type": "string", "default": "head_camera_optical"},
                     "down_distance_m": {"type": "number"},
                     "duration_s": {"type": "number", "default": 1.0},
                     "open_after_down": {"type": "boolean", "default": True},
@@ -309,6 +306,28 @@ def _mcp_control_tools() -> list[types.Tool]:
                 "properties": {
                     "arm": {"type": "string", "enum": ["left", "right"]},
                     "duration_s": {"type": "number", "default": 0.5},
+                },
+            },
+        ),
+        types.Tool(
+            name="switch_scene",
+            description="按 AprilTag 按钮切换场景：内部固定 head_camera_optical，按压间隔 press_interval_s 可控。",
+            inputSchema={
+                "type": "object",
+                "required": [],
+                "properties": {
+                    "arm": {"type": "string", "enum": ["left", "right"], "default": "right"},
+                    "button_tag_id": {"type": "integer", "default": 20},
+                    "base_offset_m": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "default": [0.0, 0.0, 0.0],
+                    },
+                    "move_duration_s": {"type": "number", "default": 2.0},
+                    "gripper_duration_s": {"type": "number", "default": 0.5},
+                    "press_interval_s": {"type": "number", "default": 3.0},
                 },
             },
         ),
@@ -448,6 +467,13 @@ async def call_skill_tool(result: list[types.TextContent], name: str, arguments:
         payload["gripper_value"] = 0.0
     elif name == "close_gripper":
         payload["gripper_value"] = 1.0
+    for fixed_key in (
+        "camera_frame",
+        "close_gripper_value",
+        "lift_dz_base_m",
+        "press_hold_s",
+    ):
+        payload.pop(fixed_key, None)
     if "control_hz" in payload or "control_frequency_hz" in payload:
         result.append(types.TextContent(type="text", text="错误: 控制频率固定为 30Hz，不能通过工具参数覆盖"))
         return
@@ -474,9 +500,9 @@ async def send_request_to_corobot(
     返回: True表示成功，False表示失败
     """
     headers = {"Content-Type": "application/json"}
-    timeout = httpx.Timeout(timeout=10.0)  # 10秒超时
+    timeout = httpx.Timeout(timeout=180.0)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
         try:
             if method == "GET":
                 response_data: Response = await client.get(url, headers=headers, params=query_params)
