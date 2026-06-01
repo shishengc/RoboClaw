@@ -982,7 +982,7 @@ Agent/UI 本身对这些工具的额外开销通常很小。真实等待主要�
 对于 AprilTag pick-and-place 演示，推荐流程是：
 
 ```text
-prepare_tag_pick_place(source_tag_id, destination_tag_id, relation)
+prepare_tag_pick_place(source_object, destination_object, relation)
 -> open_gripper
 -> move_eef(approach_camera_m)
 -> move_eef(grasp_camera_m)
