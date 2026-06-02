@@ -11,12 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .mcp_control_recipes import (
+    DEFAULT_SWITCH_SCENE_RECIPE,
     get_tag_pick_place_recipe,
     object_mapping,
     object_name_choices,
@@ -55,9 +57,57 @@ DEFAULT_MCP_LLM_TOOL_NAMES = (
     "move_eef",
     "place_down",
     "switch_scene",
+    "open_drawer_for_loading",
+    "place_workpiece_in_drawer",
+    "close_drawer_after_loading",
+    "load_workpiece_to_drawer",
 )
 DEFAULT_CALIBRATION_PATH = DEFAULT_TASK_CONFIG_PATH
 GRASP_TARGET_TOLERANCE_M = 0.003
+DEFAULT_LOAD_UNLOAD_SCRIPT_PATH = Path("/home/ck/RoboClaw/scripts/test_load_unload.sh")
+DEFAULT_LOAD_UNLOAD_ARM = "right"
+DEFAULT_LOAD_UNLOAD_PULL_PROMPT = "Pull open the drawer"
+DEFAULT_LOAD_UNLOAD_PUSH_PROMPT = "Push close the drawer"
+DEFAULT_LOAD_UNLOAD_PULL_POLICY_PORT = 8998
+DEFAULT_LOAD_UNLOAD_PUSH_POLICY_PORT = 8999
+DEFAULT_LOAD_UNLOAD_PULL_POLICY_CHUNK_COUNT = 20
+DEFAULT_LOAD_UNLOAD_PUSH_POLICY_CHUNK_COUNT = 25
+DEFAULT_LOAD_UNLOAD_POLICY_TIMEOUT_S = 300
+DEFAULT_LOAD_UNLOAD_SOURCE_TAG_ID = 5
+DEFAULT_LOAD_UNLOAD_DEST_TAG_ID = 6
+DEFAULT_LOAD_UNLOAD_GRASP_OFFSET_M = [0.0, 0.0, -0.03]
+DEFAULT_LOAD_UNLOAD_PLACE_LIFT_OFFSET_M = [0.0, 0.0, 0.20]
+DEFAULT_LOAD_UNLOAD_PLACE_DESCEND_DZ_BASE_M = 0.15
+DEFAULT_LOAD_UNLOAD_PRE_GRASP_NEG_X_DISTANCE_M = 0.03
+DEFAULT_LOAD_UNLOAD_PRE_GRASP_LIFT_Z_M = 0.05
+DEFAULT_LOAD_UNLOAD_TIMEOUT_SECONDS = 900.0
+
+LOAD_UNLOAD_STAGE_TO_SEQUENCE: dict[str, list[str]] = {
+    "pull": ["start_policy: Pull open the drawer"],
+    "place": ["pick source tag 5 and place at drawer tag 6", "reset_robot after tag place"],
+    "push": ["start_policy: Push close the drawer"],
+    "all": [
+        "start_policy: Pull open the drawer",
+        "pick source tag 5 and place at drawer tag 6",
+        "reset_robot after tag place",
+        "start_policy: Push close the drawer",
+    ],
+}
+
+
+def _int_seconds(value: Any, default: int) -> str:
+    seconds = int(round(float(value)))
+    if seconds <= 0:
+        seconds = int(default)
+    return str(seconds)
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return parsed if parsed > 0 else int(default)
 
 
 def _json_schema(
@@ -211,17 +261,33 @@ MCP_CONTROL_TOOL_SCHEMAS: dict[str, ToolSchema] = {
     "switch_scene": ToolSchema(
         name="switch_scene",
         description=(
-            "Press a scene-switch button by AprilTag: detect the button tag, close the gripper, "
-            "move above it, press, lift, wait press_interval_s, then press and lift again."
+            "Press the configured scene-switch button by AprilTag. Defaults are centralized "
+            "in mcp_control_recipes.DEFAULT_SWITCH_SCENE_RECIPE; call with no arguments "
+            "unless the operator explicitly overrides the recipe."
         ),
         parameters=_json_schema(
             {
-                "arm": {**ARM_SCHEMA, "default": "right"},
-                "button_tag_id": {"type": "integer", "default": 20},
-                "base_offset_m": {**XYZ_SCHEMA, "default": [0.0, 0.0, 0.0]},
-                "move_duration_s": {"type": "number", "default": 2.0},
-                "gripper_duration_s": {"type": "number", "default": 0.5},
-                "press_interval_s": {"type": "number", "default": 3.0},
+                "arm": {**ARM_SCHEMA, "default": DEFAULT_SWITCH_SCENE_RECIPE.arm},
+                "button_tag_id": {
+                    "type": "integer",
+                    "default": DEFAULT_SWITCH_SCENE_RECIPE.button_tag_id,
+                },
+                "base_offset_m": {
+                    **XYZ_SCHEMA,
+                    "default": list(DEFAULT_SWITCH_SCENE_RECIPE.base_offset_m),
+                },
+                "move_duration_s": {
+                    "type": "number",
+                    "default": DEFAULT_SWITCH_SCENE_RECIPE.move_duration_s,
+                },
+                "gripper_duration_s": {
+                    "type": "number",
+                    "default": DEFAULT_SWITCH_SCENE_RECIPE.gripper_duration_s,
+                },
+                "press_interval_s": {
+                    "type": "number",
+                    "default": DEFAULT_SWITCH_SCENE_RECIPE.press_interval_s,
+                },
             },
         ),
         returns={},
@@ -347,6 +413,93 @@ MCP_COMPOSITE_TOOL_SCHEMAS: dict[str, ToolSchema] = {
             "robot_state": "CoRobot skill status summary",
             "safety_status": "basic tool-level safety status",
         },
+    ),
+    "load_workpiece_to_drawer": ToolSchema(
+        name="load_workpiece_to_drawer",
+        description=(
+            "Run the full fixed drawer-magazine loading task in one tool call: use the VLA policy to pull open "
+            "the drawer, pick the workpiece at source tag 5 and place it at drawer tag 6, "
+            "reset the robot, then use the VLA policy to push close the drawer. The VLA "
+            "prompts are fixed in code and should not be generated by the LLM. For visual demos, prefer the "
+            "three stage tools open_drawer_for_loading -> place_workpiece_in_drawer -> close_drawer_after_loading."
+        ),
+        parameters=_json_schema(
+            {
+                "arm": {**ARM_SCHEMA, "default": DEFAULT_LOAD_UNLOAD_ARM},
+                "source_tag_id": {"type": "integer", "default": DEFAULT_LOAD_UNLOAD_SOURCE_TAG_ID},
+                "destination_tag_id": {"type": "integer", "default": DEFAULT_LOAD_UNLOAD_DEST_TAG_ID},
+                "pull_policy_chunk_count": {
+                    "type": "integer",
+                    "default": DEFAULT_LOAD_UNLOAD_PULL_POLICY_CHUNK_COUNT,
+                },
+                "push_policy_chunk_count": {
+                    "type": "integer",
+                    "default": DEFAULT_LOAD_UNLOAD_PUSH_POLICY_CHUNK_COUNT,
+                },
+                "policy_timeout_s": {"type": "number", "default": DEFAULT_LOAD_UNLOAD_POLICY_TIMEOUT_S},
+                "execute_pick_place": {"type": "boolean", "default": True},
+            }
+        ),
+        returns={
+            "sequence": "fixed drawer loading stages",
+            "stdout_tail": "tail of the referenced script stdout",
+            "stderr_tail": "tail of the referenced script stderr",
+            "script_path": "referenced script path",
+        },
+    ),
+    "open_drawer_for_loading": ToolSchema(
+        name="open_drawer_for_loading",
+        description=(
+            "Stage 1 of drawer-magazine loading. Run the fixed VLA policy prompt "
+            "'Pull open the drawer' and wait for it to finish. Workpiece/drawer tags are "
+            "centralized in the recipe map: 工件/workpiece -> tag 5, 抽屉式料仓/drawer_magazine -> tag 6."
+        ),
+        parameters=_json_schema(
+            {
+                "arm": {**ARM_SCHEMA, "default": DEFAULT_LOAD_UNLOAD_ARM},
+                "pull_policy_chunk_count": {
+                    "type": "integer",
+                    "default": DEFAULT_LOAD_UNLOAD_PULL_POLICY_CHUNK_COUNT,
+                },
+                "policy_timeout_s": {"type": "number", "default": DEFAULT_LOAD_UNLOAD_POLICY_TIMEOUT_S},
+            }
+        ),
+        returns={"sequence": "drawer opening stage result"},
+    ),
+    "place_workpiece_in_drawer": ToolSchema(
+        name="place_workpiece_in_drawer",
+        description=(
+            "Stage 2/3 of drawer-magazine loading. Pick the workpiece at tag 5, place it at drawer tag 6, "
+            "release it, then reset the robot before drawer closing. Uses the validated offsets from "
+            "scripts/test_load_unload.sh."
+        ),
+        parameters=_json_schema(
+            {
+                "arm": {**ARM_SCHEMA, "default": DEFAULT_LOAD_UNLOAD_ARM},
+                "source_tag_id": {"type": "integer", "default": DEFAULT_LOAD_UNLOAD_SOURCE_TAG_ID},
+                "destination_tag_id": {"type": "integer", "default": DEFAULT_LOAD_UNLOAD_DEST_TAG_ID},
+                "execute_pick_place": {"type": "boolean", "default": True},
+            }
+        ),
+        returns={"sequence": "workpiece placement and reset stage result"},
+    ),
+    "close_drawer_after_loading": ToolSchema(
+        name="close_drawer_after_loading",
+        description=(
+            "Final stage of drawer-magazine loading. Run the fixed VLA policy prompt "
+            "'Push close the drawer' and wait for it to finish."
+        ),
+        parameters=_json_schema(
+            {
+                "arm": {**ARM_SCHEMA, "default": DEFAULT_LOAD_UNLOAD_ARM},
+                "push_policy_chunk_count": {
+                    "type": "integer",
+                    "default": DEFAULT_LOAD_UNLOAD_PUSH_POLICY_CHUNK_COUNT,
+                },
+                "policy_timeout_s": {"type": "number", "default": DEFAULT_LOAD_UNLOAD_POLICY_TIMEOUT_S},
+            }
+        ),
+        returns={"sequence": "drawer closing stage result"},
     ),
 }
 
@@ -502,6 +655,8 @@ class McpControlAgentTool(BaseTool):
                 )
                 if order_error is not None:
                     return order_error
+        elif self.name == "switch_scene":
+            payload.update({**DEFAULT_SWITCH_SCENE_RECIPE.to_tool_defaults(), **payload})
 
         _drop_fixed_skill_arguments(payload)
 
@@ -1043,6 +1198,211 @@ class McpSenseEnvironmentTool(BaseTool):
         )
 
 
+class LoadWorkpieceToDrawerTool(BaseTool):
+    """Composite tool that delegates the fixed drawer loading demo to the validated script."""
+
+    name = "load_workpiece_to_drawer"
+    description = MCP_COMPOSITE_TOOL_SCHEMAS[name].description
+    stage = "all"
+
+    def __init__(
+        self,
+        *,
+        base_url: str = DEFAULT_COROBOT_BASE_URL,
+        timeout_seconds: float = DEFAULT_LOAD_UNLOAD_TIMEOUT_SECONDS,
+        script_path: str | Path = DEFAULT_LOAD_UNLOAD_SCRIPT_PATH,
+    ) -> None:
+        self.base_url = base_url
+        self.timeout_seconds = max(float(timeout_seconds), DEFAULT_LOAD_UNLOAD_TIMEOUT_SECONDS)
+        self.script_path = Path(script_path)
+
+    def get_schema(self) -> ToolSchema:
+        return MCP_COMPOSITE_TOOL_SCHEMAS[self.name]
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        if not self.script_path.exists():
+            return ToolResult(
+                status=ToolStatus.FAILED,
+                message=f"load/unload script not found: {self.script_path}",
+                data={"error_type": "script_not_found", "script_path": str(self.script_path)},
+                tool_name=self.name,
+            )
+
+        try:
+            env = self._build_env(kwargs, stage=self.stage)
+        except (TypeError, ValueError) as exc:
+            return ToolResult(
+                status=ToolStatus.FAILED,
+                message=str(exc),
+                data={"error_type": "invalid_argument", "args": kwargs},
+                tool_name=self.name,
+            )
+
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                ["bash", str(self.script_path)],
+                cwd=str(self.script_path.resolve().parents[1]),
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return ToolResult(
+                status=ToolStatus.FAILED,
+                message=f"load_workpiece_to_drawer timed out after {self.timeout_seconds:.0f}s",
+                data={
+                    "error_type": "timeout",
+                    "timeout_seconds": self.timeout_seconds,
+                    "script_path": str(self.script_path),
+                    "stdout_tail": _tail_text(exc.stdout),
+                    "stderr_tail": _tail_text(exc.stderr),
+                },
+                tool_name=self.name,
+            )
+        except Exception as exc:
+            return ToolResult(
+                status=ToolStatus.FAILED,
+                message=f"failed to run load_workpiece_to_drawer script: {exc}",
+                data={
+                    "error_type": "exception",
+                    "script_path": str(self.script_path),
+                    "error": str(exc),
+                },
+                tool_name=self.name,
+            )
+
+        success = completed.returncode == 0
+        parameters = {
+            "arm": env["ARM"],
+            "source_tag_id": int(env["SOURCE_TAG_ID"]),
+            "destination_tag_id": int(env["DEST_TAG_ID"]),
+            "grasp_offset_base_m": [
+                float(env["GRASP_OFFSET_X"]),
+                float(env["GRASP_OFFSET_Y"]),
+                float(env["GRASP_OFFSET_Z"]),
+            ],
+            "place_lift_offset_base_m": [
+                float(env["PLACE_OFFSET_X"]),
+                float(env["PLACE_OFFSET_Y"]),
+                float(env["PLACE_OFFSET_Z"]),
+            ],
+            "place_descend_dz_base_m": float(env["PLACE_DESCEND_DZ_BASE_M"]),
+            "pull_policy_chunk_count": int(env["PULL_CHUNK_COUNT"]),
+            "push_policy_chunk_count": int(env["PUSH_CHUNK_COUNT"]),
+            "policy_timeout_s": float(env["POLICY_TIMEOUT_S"]),
+            "pull_policy_port": int(env["PULL_POLICY_PORT"]),
+            "push_policy_port": int(env["PUSH_POLICY_PORT"]),
+        }
+        return ToolResult(
+            status=ToolStatus.SUCCESS if success else ToolStatus.FAILED,
+            message=(
+                "load_workpiece_to_drawer completed"
+                if success
+                else f"load_workpiece_to_drawer failed with exit code {completed.returncode}"
+            ),
+            data={
+                "script_path": str(self.script_path),
+                "returncode": completed.returncode,
+                "stage": self.stage,
+                "sequence": LOAD_UNLOAD_STAGE_TO_SEQUENCE[self.stage],
+                "fixed_vla_prompts": {
+                    "pull": DEFAULT_LOAD_UNLOAD_PULL_PROMPT,
+                    "push": DEFAULT_LOAD_UNLOAD_PUSH_PROMPT,
+                },
+                "parameters": parameters,
+                "stdout_tail": _tail_text(completed.stdout),
+                "stderr_tail": _tail_text(completed.stderr),
+            },
+            raw_output=completed.stdout,
+            tool_name=self.name,
+        )
+
+    def _build_env(self, kwargs: dict[str, Any], *, stage: str) -> dict[str, str]:
+        env = os.environ.copy()
+        grasp_offset = _vector(kwargs.get("grasp_offset_base_m", DEFAULT_LOAD_UNLOAD_GRASP_OFFSET_M), 3)
+        place_lift_offset = _vector(
+            kwargs.get("place_lift_offset_base_m", DEFAULT_LOAD_UNLOAD_PLACE_LIFT_OFFSET_M),
+            3,
+        )
+        pull_chunk_count = _positive_int(
+            kwargs.get("pull_policy_chunk_count", DEFAULT_LOAD_UNLOAD_PULL_POLICY_CHUNK_COUNT),
+            DEFAULT_LOAD_UNLOAD_PULL_POLICY_CHUNK_COUNT,
+        )
+        push_chunk_count = _positive_int(
+            kwargs.get("push_policy_chunk_count", DEFAULT_LOAD_UNLOAD_PUSH_POLICY_CHUNK_COUNT),
+            DEFAULT_LOAD_UNLOAD_PUSH_POLICY_CHUNK_COUNT,
+        )
+        env.update(
+            {
+                "COROBOT_URL": self.base_url,
+                "ARM": str(kwargs.get("arm") or DEFAULT_LOAD_UNLOAD_ARM),
+                "PULL_PROMPT": DEFAULT_LOAD_UNLOAD_PULL_PROMPT,
+                "PUSH_PROMPT": DEFAULT_LOAD_UNLOAD_PUSH_PROMPT,
+                "PULL_POLICY_PORT": str(int(kwargs.get("pull_policy_port", DEFAULT_LOAD_UNLOAD_PULL_POLICY_PORT))),
+                "PUSH_POLICY_PORT": str(int(kwargs.get("push_policy_port", DEFAULT_LOAD_UNLOAD_PUSH_POLICY_PORT))),
+                "PULL_CHUNK_COUNT": str(pull_chunk_count),
+                "PUSH_CHUNK_COUNT": str(push_chunk_count),
+                "POLICY_TIMEOUT_S": _int_seconds(
+                    kwargs.get("policy_timeout_s", DEFAULT_LOAD_UNLOAD_POLICY_TIMEOUT_S),
+                    DEFAULT_LOAD_UNLOAD_POLICY_TIMEOUT_S,
+                ),
+                "SOURCE_TAG_ID": str(int(kwargs.get("source_tag_id", DEFAULT_LOAD_UNLOAD_SOURCE_TAG_ID))),
+                "DEST_TAG_ID": str(int(kwargs.get("destination_tag_id", DEFAULT_LOAD_UNLOAD_DEST_TAG_ID))),
+                "EXECUTE_PICK_PLACE": "1" if bool(kwargs.get("execute_pick_place", True)) else "0",
+                "LOAD_UNLOAD_STAGE": stage,
+                "GRASP_OFFSET_X": str(grasp_offset[0]),
+                "GRASP_OFFSET_Y": str(grasp_offset[1]),
+                "GRASP_OFFSET_Z": str(grasp_offset[2]),
+                "PLACE_OFFSET_X": str(place_lift_offset[0]),
+                "PLACE_OFFSET_Y": str(place_lift_offset[1]),
+                "PLACE_OFFSET_Z": str(place_lift_offset[2]),
+                "PLACE_DESCEND_DZ_BASE_M": str(
+                    float(kwargs.get("place_descend_dz_base_m", DEFAULT_LOAD_UNLOAD_PLACE_DESCEND_DZ_BASE_M))
+                ),
+                "PRE_GRASP_NEG_X_DISTANCE_M": str(
+                    float(
+                        kwargs.get(
+                            "pre_grasp_neg_x_distance_m",
+                            DEFAULT_LOAD_UNLOAD_PRE_GRASP_NEG_X_DISTANCE_M,
+                        )
+                    )
+                ),
+                "PRE_GRASP_LIFT_Z_M": str(
+                    float(kwargs.get("pre_grasp_lift_z_m", DEFAULT_LOAD_UNLOAD_PRE_GRASP_LIFT_Z_M))
+                ),
+            }
+        )
+        return env
+
+
+class LoadUnloadStageTool(LoadWorkpieceToDrawerTool):
+    """One visible stage of the drawer loading flow."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        stage: str,
+        base_url: str = DEFAULT_COROBOT_BASE_URL,
+        timeout_seconds: float = DEFAULT_LOAD_UNLOAD_TIMEOUT_SECONDS,
+        script_path: str | Path = DEFAULT_LOAD_UNLOAD_SCRIPT_PATH,
+    ) -> None:
+        self.name = name
+        self.stage = stage
+        super().__init__(
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            script_path=script_path,
+        )
+        self.description = MCP_COMPOSITE_TOOL_SCHEMAS[name].description
+
+    def get_schema(self) -> ToolSchema:
+        return MCP_COMPOSITE_TOOL_SCHEMAS[self.name]
+
+
 def register_mcp_control_tools(
     registry: Any,
     *,
@@ -1084,6 +1444,33 @@ def register_mcp_control_agent_tools(
             continue
         if name == "resolve_tag_pick_place_recipe":
             registry.register(ResolveTagPickPlaceRecipeTool())
+            continue
+        if name == "load_workpiece_to_drawer":
+            registry.register(
+                LoadWorkpieceToDrawerTool(
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+            continue
+        if name in {
+            "open_drawer_for_loading",
+            "place_workpiece_in_drawer",
+            "close_drawer_after_loading",
+        }:
+            stage = {
+                "open_drawer_for_loading": "pull",
+                "place_workpiece_in_drawer": "place",
+                "close_drawer_after_loading": "push",
+            }[name]
+            registry.register(
+                LoadUnloadStageTool(
+                    name,
+                    stage=stage,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
             continue
         registry.register(
             McpControlAgentTool(
@@ -1155,6 +1542,17 @@ def _try_parse_json(text: str) -> Any | None:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def _tail_text(text: Any, *, limit: int = 6000) -> str:
+    if text is None:
+        return ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
 
 
 def _normalize_corobot_response(payload: Any) -> tuple[ToolStatus, str, dict[str, Any]]:

@@ -25,6 +25,29 @@ logger = logging.getLogger(__name__)
 TaskPlanBuilder = Callable[[], list[str]]
 
 
+def _recent_atomic_actions(event_trace: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for event in reversed(event_trace):
+        detail = event.get("detail") or {}
+        tool = detail.get("tool")
+        if not tool and event.get("type") == "perception":
+            tool = "SenseEnvironment"
+        if not tool:
+            continue
+        actions.append(
+            {
+                "tool": tool,
+                "args": detail.get("args") or {},
+                "status": detail.get("status") or event.get("type"),
+                "message": detail.get("message") or "",
+                "time": event.get("timestamp") or "",
+            }
+        )
+        if len(actions) >= limit:
+            break
+    return actions
+
+
 @dataclass
 class DemoUIState:
     agent: Any
@@ -57,7 +80,7 @@ class DemoUIState:
             self.current_task = task
             self.last_result = ""
             self.last_error = ""
-        self.add_event("info", f"Task submitted: {task}")
+        self.add_event("info", f"任务已提交: {task}")
         asyncio.run_coroutine_threadsafe(self._run_task(task), self.loop)
         return True
 
@@ -90,6 +113,8 @@ class DemoUIState:
             last_error = self.last_error
 
         trajectory = self.agent.get_trajectory()
+        event_trace = self.agent.get_event_trace() if hasattr(self.agent, "get_event_trace") else []
+        action_status = self.agent.get_action_status() if hasattr(self.agent, "get_action_status") else {}
         return {
             "is_running": is_running,
             "current_task": current_task,
@@ -102,12 +127,17 @@ class DemoUIState:
             "tools": self.agent.tool_registry.list_tools(),
             "events": events,
             "trajectory_tail": trajectory[-12:],
+            "atomic_action": {
+                "current": action_status.get("current"),
+                "last": action_status.get("last"),
+                "recent": _recent_atomic_actions(event_trace),
+            },
         }
 
 
 def build_handler(state: DemoUIState) -> type[BaseHTTPRequestHandler]:
     class DemoUIHandler(BaseHTTPRequestHandler):
-        server_version = "RobotClawDemoUI/1.0"
+        server_version = "EITRobotDemoUI/1.0"
 
         def log_message(self, format: str, *args: Any) -> None:
             logger.debug("[DemoUI] " + format, *args)
@@ -180,7 +210,7 @@ async def run_demo_ui(
     server = ThreadingHTTPServer((args.host, args.port), build_handler(state))
     host, port = server.server_address
     url_host = "127.0.0.1" if host in {"", "0.0.0.0"} else host
-    print(f"RobotClaw demo UI: http://{url_host}:{port}")
+    print(f"EIT ROBOT demo UI: http://{url_host}:{port}")
     print("Press Ctrl+C to stop the UI server.")
 
     server_task = asyncio.create_task(asyncio.to_thread(server.serve_forever, poll_interval=0.25))
@@ -200,7 +230,7 @@ DEMO_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RobotClaw Demo Console</title>
+  <title>EIT ROBOT Console</title>
   <style>
     :root {
       color-scheme: light;
@@ -281,7 +311,7 @@ DEMO_HTML = r"""<!doctype html>
     }
     .stage-meta {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 10px;
       margin-top: 18px;
     }
@@ -302,6 +332,78 @@ DEMO_HTML = r"""<!doctype html>
       font-weight: 700;
       overflow-wrap: anywhere;
     }
+    .latent-panel {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.84);
+      padding: 14px;
+    }
+    .latent-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .phase {
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .action-card {
+      border: 1px solid #edf0f5;
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 12px;
+    }
+    .action-name {
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+    .action-detail {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .action-flow {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .flow-step {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid #edf0f5;
+      border-radius: 8px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .flow-step.running {
+      border-color: rgba(47, 128, 237, 0.42);
+      background: rgba(47, 128, 237, 0.08);
+      color: var(--ink);
+    }
+    .flow-step.success {
+      border-color: rgba(2, 122, 72, 0.28);
+    }
+    .flow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      background: var(--muted);
+    }
+    .flow-step.running .flow-dot { background: var(--accent-2); }
+    .flow-step.success .flow-dot { background: var(--success); }
+    .flow-step.failed .flow-dot { background: var(--error); }
     .console {
       padding: 28px;
       display: flex;
@@ -435,33 +537,42 @@ DEMO_HTML = r"""<!doctype html>
   <main class="shell">
     <section class="stage">
       <div class="brand">
-        <h1>RobotClaw Demo Console</h1>
+        <h1>EIT ROBOT</h1>
         <div class="status-pill"><span id="dot" class="dot"></span><span id="state">INIT</span></div>
       </div>
       <canvas id="robotCanvas" class="visual" width="900" height="840"></canvas>
       <div class="stage-meta">
-        <div class="metric"><div class="metric-label">Progress</div><div class="metric-value" id="progress">0%</div></div>
-        <div class="metric"><div class="metric-label">Current Task</div><div class="metric-value" id="task">Waiting</div></div>
-        <div class="metric"><div class="metric-label">Trajectory</div><div class="metric-value" id="trajectory">None</div></div>
+        <div class="metric"><div class="metric-label">任务进度</div><div class="metric-value" id="progress">0%</div></div>
+        <div class="metric"><div class="metric-label">当前任务</div><div class="metric-value" id="task">等待中</div></div>
+        <div class="metric"><div class="metric-label">原子动作</div><div class="metric-value" id="atomicMetric">等待中</div></div>
+        <div class="metric"><div class="metric-label">轨迹文件</div><div class="metric-value" id="trajectory">无</div></div>
+      </div>
+      <div class="latent-panel">
+        <div class="latent-head"><span>世界模型隐空间</span><span class="phase" id="actionPhase">待机</span></div>
+        <div class="action-card">
+          <div class="action-name" id="atomicAction">等待原子动作</div>
+          <div class="action-detail" id="atomicDetail">等待任务输入。</div>
+        </div>
+        <div class="action-flow" id="actionFlow"></div>
       </div>
     </section>
     <section class="console">
       <section class="panel">
-        <label for="taskInput">Task instruction</label>
+        <label for="taskInput">任务指令</label>
         <div class="task-form">
           <textarea id="taskInput" placeholder="例如：把tag 0放tag 1上，这是一个装配任务"></textarea>
-          <button id="submitBtn">Run Task</button>
+          <button id="submitBtn">运行任务</button>
         </div>
       </section>
       <section class="panel summary">
-        <div><strong>Result:</strong> <span id="result">No result yet.</span></div>
-        <div><strong>Runtime:</strong> <span id="runtime">Waiting for task input.</span></div>
+        <div><strong>结果:</strong> <span id="result">暂无结果。</span></div>
+        <div><strong>运行状态:</strong> <span id="runtime">等待任务输入。</span></div>
       </section>
       <section class="panel">
         <div class="tabs">
-          <button class="tab active" data-tab="events">Events</button>
-          <button class="tab" data-tab="trajectory">Trajectory</button>
-          <button class="tab" data-tab="tools">Tools</button>
+          <button class="tab active" data-tab="events">事件</button>
+          <button class="tab" data-tab="trajectory">轨迹</button>
+          <button class="tab" data-tab="tools">工具</button>
         </div>
         <div id="eventsView" class="log"></div>
         <div id="trajectoryView" class="log" hidden></div>
@@ -475,6 +586,11 @@ DEMO_HTML = r"""<!doctype html>
       state: document.getElementById('state'),
       progress: document.getElementById('progress'),
       task: document.getElementById('task'),
+      atomicMetric: document.getElementById('atomicMetric'),
+      atomicAction: document.getElementById('atomicAction'),
+      atomicDetail: document.getElementById('atomicDetail'),
+      actionPhase: document.getElementById('actionPhase'),
+      actionFlow: document.getElementById('actionFlow'),
       trajectory: document.getElementById('trajectory'),
       result: document.getElementById('result'),
       runtime: document.getElementById('runtime'),
@@ -486,12 +602,51 @@ DEMO_HTML = r"""<!doctype html>
       canvas: document.getElementById('robotCanvas')
     };
     let latestStatus = null;
+    const ACTION_LABELS = {
+      get_skill_status: {name: '读取技能状态', phase: '状态同步'},
+      reset_robot: {name: '机器人复位', phase: '安全复位'},
+      get_eef_pose: {name: '读取末端位姿', phase: '空间感知'},
+      detect_tags: {name: '刷新视觉标签', phase: '环境感知'},
+      get_apriltag_pose: {name: '读取标签位姿', phase: '空间感知'},
+      prepare_tag_pick_place: {name: '生成抓放计划', phase: '隐空间规划'},
+      resolve_tag_pick_place_recipe: {name: '匹配任务配方', phase: '隐空间规划'},
+      compute_tag_grasp_targets: {name: '计算抓取目标', phase: '几何推演'},
+      compute_tag_place_targets: {name: '计算放置目标', phase: '几何推演'},
+      move_eef: {name: '末端空间移动', phase: '运动执行'},
+      lift_eef: {name: '末端垂直抬升', phase: '运动执行'},
+      place_down: {name: '末端下降放置', phase: '运动执行'},
+      open_gripper: {name: '张开夹爪', phase: '夹爪控制'},
+      close_gripper: {name: '闭合夹爪', phase: '夹爪控制'},
+      switch_scene: {name: '按压场景按钮', phase: '场景切换'},
+      SenseEnvironment: {name: '环境感知校验', phase: '结果验证'},
+      FinalizeTask: {name: '确认任务完成', phase: '任务收束'},
+      LocateObject: {name: '定位目标物体', phase: '环境感知'},
+      GraspObject: {name: '抓取目标物体', phase: '运动执行'},
+      PlaceObject: {name: '放置目标物体', phase: '运动执行'},
+      EnsureAbsPoseRunning: {name: '确认位姿服务', phase: '状态同步'},
+      ApproachTarget: {name: '接近目标', phase: '运动执行'},
+      AlignTarget: {name: '对齐目标', phase: '运动执行'},
+      GraspAtCurrent: {name: '当前位置抓取', phase: '夹爪控制'},
+      MoveEndEffectorToWorld: {name: '末端世界坐标移动', phase: '运动执行'},
+      PlaceHeldObject: {name: '放置手中物体', phase: '运动执行'},
+      ReturnToDefaultAbsPose: {name: '返回默认姿态', phase: '安全复位'}
+    };
+    const STATUS_LABELS = {
+      running: '正在执行',
+      success: '已完成',
+      failed: '失败',
+      partial: '部分执行',
+      tool_call: '已执行',
+      tool_retry: '重试中',
+      tool_call_deferred: '已暂缓',
+      perception: '已感知'
+    };
 
     async function submitTask() {
       const task = els.taskInput.value.trim();
       if (!task) return;
       els.submitBtn.disabled = true;
-      els.result.textContent = 'Task submitted.';
+      els.result.textContent = '任务已提交。';
       try {
         const res = await fetch('/api/task', {
           method: 'POST',
@@ -520,22 +675,112 @@ DEMO_HTML = r"""<!doctype html>
       els.dot.className = 'dot ' + (running ? 'running' : 'ready');
       els.state.textContent = running ? 'RUNNING' : data.state;
       els.progress.textContent = `${Number(data.progress || 0).toFixed(1)}%`;
-      els.task.textContent = data.current_task || 'Waiting';
-      els.trajectory.textContent = data.trajectory_path ? data.trajectory_path.split('/').pop() : 'None';
-      els.result.textContent = data.last_error || data.last_result || 'No result yet.';
-      els.runtime.textContent = data.progress_summary || 'Waiting for task input.';
+      els.task.textContent = data.current_task || '等待中';
+      els.trajectory.textContent = data.trajectory_path ? data.trajectory_path.split('/').pop() : '无';
+      els.result.textContent = data.last_error || data.last_result || '暂无结果。';
+      els.runtime.textContent = data.progress_summary || '等待任务输入。';
       els.submitBtn.disabled = running;
+      renderAtomicAction(data.atomic_action || {});
 
       els.eventsView.innerHTML = (data.events || []).slice().reverse().map(e =>
         `<div class="entry ${escapeHtml(e.level)}"><span class="time">${escapeHtml(e.time)}</span>${escapeHtml(e.message)}</div>`
-      ).join('') || '<div class="entry">No events yet.</div>';
+      ).join('') || '<div class="entry">暂无事件。</div>';
 
       els.trajectoryView.innerHTML = (data.trajectory_tail || []).slice().reverse().map(t => {
         const title = `${t.step || '-'} ${t.type || ''}`;
         return `<div class="entry"><span class="time">${escapeHtml(title)}</span>${escapeHtml(JSON.stringify(t.detail || {}))}</div>`;
-      }).join('') || '<div class="entry">No trajectory yet.</div>';
+      }).join('') || '<div class="entry">暂无轨迹。</div>';
 
       els.toolsView.innerHTML = (data.tools || []).map(t => `<span class="tool">${escapeHtml(t)}</span>`).join('');
+    }
+
+    function renderAtomicAction(actionState) {
+      const current = actionState.current || null;
+      const last = actionState.last || null;
+      const action = current || last;
+      if (!action) {
+        els.atomicMetric.textContent = '等待中';
+        els.atomicAction.textContent = '等待原子动作';
+        els.atomicDetail.textContent = '等待任务输入。';
+        els.actionPhase.textContent = '待机';
+        els.actionFlow.innerHTML = '<div class="flow-step"><span class="flow-dot"></span><span>等待任务输入</span><span>待机</span></div>';
+        return;
+      }
+
+      const label = actionLabel(action.tool);
+      const status = current ? 'running' : (action.status || 'success');
+      els.atomicMetric.textContent = label.name;
+      els.atomicAction.textContent = label.name;
+      els.atomicDetail.textContent = actionDetail(action);
+      els.actionPhase.textContent = `${label.phase} · ${statusLabel(status)}`;
+
+      const rows = [];
+      if (current) rows.push({...current, status: 'running'});
+      for (const item of (actionState.recent || [])) rows.push(item);
+      const uniqueRows = [];
+      const seen = new Set();
+      for (const item of rows) {
+        const key = `${item.tool}:${item.status}:${JSON.stringify(item.args || {})}:${item.time || item.finished_at || item.started_at || ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        uniqueRows.push(item);
+        if (uniqueRows.length >= 6) break;
+      }
+      els.actionFlow.innerHTML = uniqueRows.map(item => {
+        const info = actionLabel(item.tool);
+        const itemStatus = item.status || 'success';
+        return `<div class="flow-step ${escapeHtml(statusClass(itemStatus))}">` +
+          `<span class="flow-dot"></span>` +
+          `<span>${escapeHtml(info.name)}</span>` +
+          `<span>${escapeHtml(statusLabel(itemStatus))}</span>` +
+          `</div>`;
+      }).join('');
+    }
+
+    function actionLabel(tool) {
+      return ACTION_LABELS[tool] || {name: tool || '未知原子动作', phase: '原子执行'};
+    }
+
+    function statusLabel(status) {
+      return STATUS_LABELS[status] || status || '未知';
+    }
+
+    function statusClass(status) {
+      if (status === 'running') return 'running';
+      if (status === 'success' || status === 'tool_call' || status === 'perception') return 'success';
+      if (status === 'failed') return 'failed';
+      return '';
+    }
+
+    function actionDetail(action) {
+      const args = action.args || {};
+      const parts = [];
+      if (action.tool) parts.push(`tool=${action.tool}`);
+      if (action.attempt && action.attempt > 1) parts.push(`第 ${action.attempt} 次尝试`);
+      if (args.arm) parts.push(`机械臂=${armLabel(args.arm)}`);
+      if (args.tag_id !== undefined) parts.push(`tag=${args.tag_id}`);
+      if (args.button_tag_id !== undefined) parts.push(`按钮tag=${args.button_tag_id}`);
+      if (args.source_object || args.destination_object) {
+        parts.push(`${args.source_object || '目标'} → ${args.destination_object || '目标'}`);
+      }
+      if (args.relation) parts.push(`关系=${args.relation}`);
+      if (Array.isArray(args.target_position_camera_m)) {
+        parts.push(`相机目标=[${formatVector(args.target_position_camera_m)}]`);
+      }
+      if (Array.isArray(args.base_offset_m)) {
+        parts.push(`base偏移=[${formatVector(args.base_offset_m)}]`);
+      }
+      if (args.duration_s !== undefined) parts.push(`时长=${Number(args.duration_s).toFixed(2)}s`);
+      if (action.message) parts.push(action.message);
+      return parts.join(' · ') || '等待执行参数。';
+    }
+
+    function armLabel(value) {
+      return value === 'left' ? '左臂' : value === 'right' ? '右臂' : value;
+    }
+
+    function formatVector(values) {
+      return values.map(v => Number(v).toFixed(3)).join(', ');
     }
 
     function escapeHtml(value) {
@@ -627,7 +872,7 @@ DEMO_HTML = r"""<!doctype html>
 
       ctx.fillStyle = '#667085';
       ctx.font = '600 24px system-ui';
-      ctx.fillText(running ? 'Executing batched robot task' : 'Ready for task instruction', 72, 64);
+      ctx.fillText(running ? 'EIT ROBOT 隐空间执行中' : 'EIT ROBOT 等待任务', 72, 64);
       requestAnimationFrame(drawRobot);
     }
     function circle(x, y, r) {

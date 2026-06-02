@@ -54,6 +54,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dump-input", default=None, help="Write reconstructed request JSON to this path.")
     parser.add_argument("--dry-run", action="store_true", help="Only reconstruct input; do not call the API.")
+    parser.add_argument(
+        "--no-control",
+        action="store_true",
+        help="Disable the short-input control request.",
+    )
+    parser.add_argument(
+        "--control-prompt",
+        default="你好",
+        help="Short prompt used for the latency control group.",
+    )
+    parser.add_argument(
+        "--control-repeat",
+        type=int,
+        default=None,
+        help="Number of control timing runs. Defaults to --repeat.",
+    )
+    parser.add_argument(
+        "--control-max-completion-tokens",
+        type=int,
+        default=32,
+        help="Max completion tokens for the short-input control group.",
+    )
     return parser
 
 
@@ -273,6 +295,23 @@ def shorten(value: Any, max_len: int) -> str:
     return text[: max_len - 3] + "..."
 
 
+def print_latency_summary(label: str, latencies: list[float]) -> None:
+    if not latencies:
+        return
+    print(
+        f"\n{label} latency summary:",
+        json.dumps(
+            {
+                "count": len(latencies),
+                "min_s": min(latencies),
+                "max_s": max(latencies),
+                "avg_s": sum(latencies) / len(latencies),
+            },
+            indent=2,
+        ),
+    )
+
+
 async def main_async() -> None:
     args = build_parser().parse_args()
     data = load_trajectory(args.trajectory)
@@ -312,6 +351,11 @@ async def main_async() -> None:
         "historical calls:",
         [call.get("name") for call in selected.get("detail", {}).get("tool_calls", [])],
     )
+    if not args.no_control:
+        print("control prompt:", args.control_prompt)
+        print("control messages: 1")
+        print("control tools: 0")
+        print("control approx message chars:", len(args.control_prompt))
 
     if args.dry_run:
         return
@@ -320,7 +364,7 @@ async def main_async() -> None:
     if not api_key:
         raise SystemExit(f"Missing API key. Set {args.api_key_env} or pass --api-key.")
 
-    latencies: list[float] = []
+    trajectory_latencies: list[float] = []
     for run_index in range(1, args.repeat + 1):
         elapsed, response = await call_api(
             api_key=api_key,
@@ -331,24 +375,49 @@ async def main_async() -> None:
             timeout=args.timeout,
             max_completion_tokens=args.max_completion_tokens,
         )
-        latencies.append(elapsed)
+        trajectory_latencies.append(elapsed)
         summary = summarize_response(response)
-        print(f"\nrun {run_index}: {elapsed:.3f}s")
+        print(f"\ntrajectory run {run_index}: {elapsed:.3f}s")
         print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    if len(latencies) > 1:
-        print(
-            "\nlatency summary:",
-            json.dumps(
-                {
-                    "count": len(latencies),
-                    "min_s": min(latencies),
-                    "max_s": max(latencies),
-                    "avg_s": sum(latencies) / len(latencies),
-                },
-                indent=2,
-            ),
-        )
+    print_latency_summary("trajectory", trajectory_latencies)
+
+    if not args.no_control:
+        control_repeat = args.control_repeat if args.control_repeat is not None else args.repeat
+        control_messages = [{"role": "user", "content": args.control_prompt}]
+        control_latencies: list[float] = []
+        for run_index in range(1, control_repeat + 1):
+            elapsed, response = await call_api(
+                api_key=api_key,
+                base_url=args.base_url,
+                model=args.model,
+                messages=control_messages,
+                tools=None,
+                timeout=args.timeout,
+                max_completion_tokens=args.control_max_completion_tokens,
+            )
+            control_latencies.append(elapsed)
+            summary = summarize_response(response)
+            print(f"\ncontrol run {run_index}: {elapsed:.3f}s")
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+        print_latency_summary("control", control_latencies)
+
+        if trajectory_latencies and control_latencies:
+            print(
+                "\ncomparison:",
+                json.dumps(
+                    {
+                        "trajectory_avg_s": sum(trajectory_latencies) / len(trajectory_latencies),
+                        "control_avg_s": sum(control_latencies) / len(control_latencies),
+                        "avg_delta_s": (
+                            sum(trajectory_latencies) / len(trajectory_latencies)
+                            - sum(control_latencies) / len(control_latencies)
+                        ),
+                    },
+                    indent=2,
+                ),
+            )
 
 
 def main() -> None:

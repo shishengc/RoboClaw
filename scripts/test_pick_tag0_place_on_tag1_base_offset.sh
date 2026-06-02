@@ -46,11 +46,13 @@ Execute on robot:
     2 3 0.00 0.00 -0.06 0 0 0.10
 
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    0 4 -0.01 0.01 -0.07 0 0 0.10
+    17 4 -0.01 -0.02 -0.05 0 0 0.10
 
   ARM=right EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
-    17 2 0.015 0.00 -0.05 0.015 -0.01 0.02
+    17 15 0.015 0.00 -0.05 0.02 -0.01 0.02
 
+  ARM=left EXECUTE_PICK_PLACE=1 bash scripts/test_pick_tag0_place_on_tag1_base_offset.sh \
+    5 6 0.00 0.00 -0.04 0.00 0.0 0.04
 Behavior:
   1. Detect AprilTags.
   2. Read source tag and destination tag from CLI args, or env defaults.

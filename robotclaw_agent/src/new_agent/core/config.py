@@ -14,7 +14,7 @@ class AgentConfig:
     max_steps: int = 12
     max_tool_retries: int = 1
     llm_timeout_seconds: float = 60.0
-    tool_timeout_seconds: float = 180.0
+    tool_timeout_seconds: float = 900.0
     finalize_min_completion: float = 0.9
     auto_reset_on_task_complete: bool = True
     trajectory_dir: str = "trajectories"

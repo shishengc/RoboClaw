@@ -3,7 +3,7 @@
   "max_steps": 20,
   "max_tool_retries": 1,
   "llm_timeout_seconds": 60.0,
-  "tool_timeout_seconds": 180.0,
+  "tool_timeout_seconds": 900.0,
   "finalize_min_completion": 0.9,
   "auto_reset_on_task_complete": true,
   "trajectory_dir": "trajectories"

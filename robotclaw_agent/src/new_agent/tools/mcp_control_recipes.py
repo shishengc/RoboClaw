@@ -44,17 +44,51 @@ class TagPickPlaceRecipe:
         }
 
 
+@dataclass(frozen=True)
+class SwitchSceneRecipe:
+    name: str
+    description: str
+    button_object: str
+    arm: str
+    base_offset_m: tuple[float, float, float]
+    press_interval_s: float
+    move_duration_s: float
+    gripper_duration_s: float
+
+    @property
+    def button_tag_id(self) -> int:
+        return tag_id_for_object(self.button_object)
+
+    def to_tool_defaults(self) -> dict[str, Any]:
+        return {
+            "arm": self.arm,
+            "button_tag_id": self.button_tag_id,
+            "base_offset_m": list(self.base_offset_m),
+            "move_duration_s": self.move_duration_s,
+            "gripper_duration_s": self.gripper_duration_s,
+            "press_interval_s": self.press_interval_s,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "recipe_name": self.name,
+            "description": self.description,
+            "button_object": self.button_object,
+            **self.to_tool_defaults(),
+        }
+
+
 OBJECT_TAG_BINDINGS: dict[str, ObjectTagBinding] = {
     "bearing": ObjectTagBinding(
         canonical_name="bearing",
         display_name="轴承",
-        tag_id=17,
+        tag_id=18,
         aliases=("轴承", "bearing"),
     ),
     "base": ObjectTagBinding(
         canonical_name="base",
         display_name="底座",
-        tag_id=24,
+        tag_id=0,
         aliases=("底座", "base"),
     ),
     "waste": ObjectTagBinding(
@@ -75,6 +109,24 @@ OBJECT_TAG_BINDINGS: dict[str, ObjectTagBinding] = {
         tag_id=4,
         aliases=("良品盒", "good_box", "ok_box"),
     ),
+    "workpiece": ObjectTagBinding(
+        canonical_name="workpiece",
+        display_name="工件",
+        tag_id=5,
+        aliases=("工件", "workpiece", "part"),
+    ),
+    "drawer_magazine": ObjectTagBinding(
+        canonical_name="drawer_magazine",
+        display_name="抽屉式料仓",
+        tag_id=6,
+        aliases=("抽屉式料仓", "抽屉", "料仓", "drawer", "drawer_magazine"),
+    ),
+    "scene_switch_button": ObjectTagBinding(
+        canonical_name="scene_switch_button",
+        display_name="场景切换按钮",
+        tag_id=19,
+        aliases=("场景切换按钮", "切换按钮", "按钮", "scene_switch_button", "switch_button"),
+    ),
 }
 
 _OBJECT_ALIAS_TO_CANONICAL: dict[str, str] = {}
@@ -90,8 +142,8 @@ TAG_PICK_PLACE_RECIPES: dict[str, TagPickPlaceRecipe] = {
     "bearing_on_base": TagPickPlaceRecipe(
         name="bearing_on_base",
         description="Place the bearing on the base.",
-        source_base_offset_m=(-0.01, 0.01, -0.10),
-        place_base_offset_m=(-0.012, -0.015, 0.02),
+        source_base_offset_m=(0.015, 0.00, -0.05),
+        place_base_offset_m=(0.02, -0.01, 0.02),
         approach_distance_m=0.06,
         lift_height_m=0.10,
         hover_height_m=0.10,
@@ -108,7 +160,7 @@ TAG_PICK_PLACE_RECIPES: dict[str, TagPickPlaceRecipe] = {
     "bearing_to_good_box": TagPickPlaceRecipe(
         name="bearing_to_good_box",
         description="Place the bearing inside the good box.",
-        source_base_offset_m=(-0.01, 0.01, -0.07),
+        source_base_offset_m=(-0.01, -0.02, -0.05),
         place_base_offset_m=(0.00, 0.00, 0.10),
         approach_distance_m=0.06,
         lift_height_m=0.10,
@@ -123,6 +175,17 @@ RECIPE_ALIASES: dict[str, str] = {
 }
 
 DEFAULT_TAG_PICK_PLACE_RECIPE = "bearing_on_base"
+
+DEFAULT_SWITCH_SCENE_RECIPE = SwitchSceneRecipe(
+    name="default_scene_switch",
+    description="Press the scene-switch button using the validated robot demo parameters.",
+    button_object="scene_switch_button",
+    arm="right",
+    base_offset_m=(0.0, 0.0, -0.01),
+    press_interval_s=3.0,
+    move_duration_s=2.0,
+    gripper_duration_s=0.5,
+)
 
 RELATION_TO_RECIPE: dict[str, str] = {
     "on": "bearing_on_base",

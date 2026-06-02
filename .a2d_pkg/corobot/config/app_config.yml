@@ -7,6 +7,11 @@ app:
 
 # 默认加载的PolicyTask
 default_policytask:
-  policy_module: "corobot.policy_tasks.service_policy_task" # installed policy module
-  class_name: "ServicePolicyTask"
-  config_path: "~/.cache/agibot/corobot/service_policytask_config.yml"
+  policy_module: "corobot.policy_tasks.rule_control_task"
+  class_name: "RuleControlTask"
+  config_path: "~/.cache/agibot/corobot/rule_control_task_config.yml"
+
+# default_policytask:
+#   policy_module: "corobot.policy_tasks.service_policy_task" # installed policy module
+#   class_name: "ServicePolicyTask"
+#   config_path: "~/.cache/agibot/corobot/service_policytask_config.yml"

@@ -67,6 +67,14 @@ RESET_CONFIG_KEY_MAP = {
 
 _FK_SOLVER = None
 DEFAULT_CAMERA_FRAME = "head_camera_optical"
+SWITCH_SCENE_WAIST_POSITIONS = [0.8001176920412174, 0.3898677062988281]
+POLICY_WAIST_MOVE_DURATION_S = 3.0
+POLICY_WAIST_CONTROL_HZ = 30.0
+POLICY_WAIST_SETTLE_TIMEOUT_S = 2.0
+POLICY_WAIST_TOLERANCE = 0.03
+POLICY_IMAGE_CAMERAS = ("head", "hand_left", "hand_right")
+POLICY_IMAGE_HEIGHT = 224
+POLICY_IMAGE_WIDTH = 224
 
 
 class RuleControlTask(PolicyTaskBase):
@@ -79,6 +87,8 @@ class RuleControlTask(PolicyTaskBase):
         self._perception: AprilTagPerceptionService | None = None
         self._reset_pose = _copy_reset_pose(DEFAULT_RESET_POSE)
         self._reset_on_initialize = False
+        self._pull_waist_positions = _configured_pull_waist_positions(self.config)
+        self._push_waist_positions = _configured_push_waist_positions(self.config)
         self._kinematics = None
         self._kinematics_urdf_path: str | None = None
         policy_skill_cfg = self.config.get("policy_skill") or {}
@@ -155,6 +165,8 @@ class RuleControlTask(PolicyTaskBase):
                 "has_target_arm_joint_positions": self._reset_pose.get("target_arm_joint_positions") is not None,
                 "has_target_head_positions": self._reset_pose.get("target_head_positions") is not None,
                 "has_target_waist_positions": self._reset_pose.get("target_waist_positions") is not None,
+                "has_pull_waist_positions": self._pull_waist_positions is not None,
+                "has_push_waist_positions": self._push_waist_positions is not None,
             },
         }
 
@@ -178,7 +190,8 @@ class RuleControlTask(PolicyTaskBase):
 
         policy_url = f"ws://{self._policy_host}:{port}"
         with self._policy_lock:
-            if self._policy_thread is not None and self._policy_thread.is_alive():
+            policy_running = bool(self._policy_state.get("running"))
+            if policy_running or (self._policy_thread is not None and self._policy_thread.is_alive()):
                 status = self._policy_status_unlocked()
                 status["ok"] = False
                 status["message"] = "policy run is already active"
@@ -194,6 +207,21 @@ class RuleControlTask(PolicyTaskBase):
             )
             self._running = True
             self._policy_ws = None
+
+        try:
+            pre_policy_waist_result = self._prepare_policy_start_pose(prompt)
+            if pre_policy_waist_result is not None:
+                with self._policy_lock:
+                    self._policy_state["pre_policy_waist_result"] = _json_safe(pre_policy_waist_result)
+        except Exception as exc:
+            with self._policy_lock:
+                self._policy_state["running"] = False
+                self._policy_state["failed"] = True
+                self._policy_state["last_error"] = str(exc)
+                self._running = False
+                return self._policy_status_unlocked()
+
+        with self._policy_lock:
             self._policy_thread = threading.Thread(
                 target=self._policy_loop,
                 args=(prompt, chunk_count, policy_url),
@@ -393,7 +421,7 @@ class RuleControlTask(PolicyTaskBase):
     def switch_scene(
         self,
         arm: str = "right",
-        button_tag_id: int = 20,
+        button_tag_id: int = 21,
         base_offset_m: list[float] | None = None,
         move_duration_s: float = 2.0,
         gripper_duration_s: float = 0.5,
@@ -401,109 +429,124 @@ class RuleControlTask(PolicyTaskBase):
     ) -> dict[str, Any]:
         arm = _validate_arm(arm)
         button_tag_id = int(button_tag_id)
-        base_offset = np.asarray(_float_list(base_offset_m or [0.0, 0.0, 0.0], 3), dtype=np.float64)
+        base_offset = np.asarray(_float_list(base_offset_m or [0.0, 0.0, -0.02], 3), dtype=np.float64)
         lift_dz_base_m = 0.10
         press_hold_s = 0.5
         close_gripper_value = 1.0
 
-        obs = self._observation()
-        detection = self._perception_service().detect_from_observation(obs)
-        if not detection.get("ok"):
-            return {
-                "ok": False,
-                "message": "switch_scene failed before motion: AprilTag detection failed",
-                "error_type": "tag_detection_failed",
-                "detection": detection,
+        switch_waist_result = self._move_waist_preserving_arm(
+            SWITCH_SCENE_WAIST_POSITIONS,
+            reason="switch_scene_prepare",
+        )
+        restore_result = None
+        result: dict[str, Any]
+        try:
+            obs = self._observation()
+            detection = self._perception_service().detect_from_observation(obs)
+            if not detection.get("ok"):
+                result = {
+                    "ok": False,
+                    "message": "switch_scene failed before motion: AprilTag detection failed",
+                    "error_type": "tag_detection_failed",
+                    "detection": detection,
+                }
+                return result
+
+            detections = detection.get("detections") or []
+            button_tag = next((item for item in detections if int(item.get("tag_id", -1)) == button_tag_id), None)
+            if button_tag is None:
+                result = {
+                    "ok": False,
+                    "message": f"switch_scene failed before motion: button tag {button_tag_id} is not visible",
+                    "error_type": "tag_not_visible",
+                    "missing_tag_ids": [button_tag_id],
+                    "visible_tag_ids": sorted(int(item["tag_id"]) for item in detections if "tag_id" in item),
+                    "detections": detections,
+                }
+                return result
+
+            calibration = self._calibration_for_observation(obs)
+            camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
+            tag_camera = np.asarray(_tag_position_camera(button_tag), dtype=np.float64).reshape(3)
+            tag_base = calibration.camera_to_exec_point(tag_camera, camera_frame)
+            button_base = tag_base + base_offset
+            button_above_base = button_base + np.asarray([0.0, 0.0, lift_dz_base_m], dtype=np.float64)
+            button_camera = calibration.exec_to_camera_point(button_base, camera_frame)
+            button_above_camera = calibration.exec_to_camera_point(button_above_base, camera_frame)
+
+            targets = {
+                "tag_position_camera_m": _round_list(tag_camera),
+                "tag_position_base_m": _round_list(tag_base),
+                "button_contact_base_m": _round_list(button_base),
+                "button_contact_camera_m": _round_list(button_camera),
+                "button_above_base_m": _round_list(button_above_base),
+                "button_above_camera_m": _round_list(button_above_camera),
             }
 
-        detections = detection.get("detections") or []
-        button_tag = next((item for item in detections if int(item.get("tag_id", -1)) == button_tag_id), None)
-        if button_tag is None:
-            return {
-                "ok": False,
-                "message": f"switch_scene failed before motion: button tag {button_tag_id} is not visible",
-                "error_type": "tag_not_visible",
-                "missing_tag_ids": [button_tag_id],
-                "visible_tag_ids": sorted(int(item["tag_id"]) for item in detections if "tag_id" in item),
-                "detections": detections,
+            segments: list[dict[str, Any]] = []
+
+            def execute_gripper(name: str) -> None:
+                action_obs = self._observation()
+                action, meta = build_gripper_action(
+                    action_obs,
+                    arm=arm,
+                    gripper_value=close_gripper_value,
+                    duration_s=gripper_duration_s,
+                )
+                self._execute(action, meta["actual_duration_s"])
+                segments.append({"name": name, "action": action, "meta": meta})
+
+            def execute_move(name: str, target_camera: np.ndarray) -> None:
+                action_obs = self._observation()
+                action_calibration = self._calibration_for_observation(action_obs)
+                action, meta = build_move_eef_action(
+                    action_obs,
+                    action_calibration,
+                    arm=arm,
+                    camera_frame=camera_frame,
+                    target_position_camera_m=_round_list(target_camera),
+                    duration_s=move_duration_s,
+                )
+                self._execute(action, meta["actual_duration_s"])
+                segments.append({"name": name, "action": action, "meta": meta})
+
+            def wait_segment(name: str, duration_s: float) -> None:
+                if duration_s <= 0.0:
+                    return
+                time.sleep(duration_s)
+                segments.append({"name": name, "wait_s": duration_s})
+
+            execute_gripper("close_gripper")
+            execute_move("move_to_button_above_1", button_above_camera)
+            execute_move("move_down_to_button_press_1", button_camera)
+            wait_segment("hold_after_press_1", press_hold_s)
+            execute_move("lift_after_press_1", button_above_camera)
+            wait_segment("wait_between_presses", press_interval_s)
+            execute_move("move_down_to_button_press_2", button_camera)
+            wait_segment("hold_after_press_2", press_hold_s)
+            execute_move("lift_after_press_2", button_above_camera)
+
+            result = {
+                "ok": True,
+                "arm": arm,
+                "button_tag_id": button_tag_id,
+                "camera_frame": camera_frame,
+                "base_offset_m": _round_list(base_offset),
+                "lift_dz_base_m": lift_dz_base_m,
+                "press_hold_s": press_hold_s,
+                "press_interval_s": press_interval_s,
+                "close_gripper_value": float(close_gripper_value),
+                "button_tag": button_tag,
+                "targets": targets,
+                "sequence": [segment["name"] for segment in segments],
+                "segments": segments,
             }
-
-        calibration = self._calibration_for_observation(obs)
-        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
-        tag_camera = np.asarray(_tag_position_camera(button_tag), dtype=np.float64).reshape(3)
-        tag_base = calibration.camera_to_exec_point(tag_camera, camera_frame)
-        button_base = tag_base + base_offset
-        button_above_base = button_base + np.asarray([0.0, 0.0, lift_dz_base_m], dtype=np.float64)
-        button_camera = calibration.exec_to_camera_point(button_base, camera_frame)
-        button_above_camera = calibration.exec_to_camera_point(button_above_base, camera_frame)
-
-        targets = {
-            "tag_position_camera_m": _round_list(tag_camera),
-            "tag_position_base_m": _round_list(tag_base),
-            "button_contact_base_m": _round_list(button_base),
-            "button_contact_camera_m": _round_list(button_camera),
-            "button_above_base_m": _round_list(button_above_base),
-            "button_above_camera_m": _round_list(button_above_camera),
-        }
-
-        segments: list[dict[str, Any]] = []
-
-        def execute_gripper(name: str) -> None:
-            action_obs = self._observation()
-            action, meta = build_gripper_action(
-                action_obs,
-                arm=arm,
-                gripper_value=close_gripper_value,
-                duration_s=gripper_duration_s,
-            )
-            self._execute(action, meta["actual_duration_s"])
-            segments.append({"name": name, "action": action, "meta": meta})
-
-        def execute_move(name: str, target_camera: np.ndarray) -> None:
-            action_obs = self._observation()
-            action_calibration = self._calibration_for_observation(action_obs)
-            action, meta = build_move_eef_action(
-                action_obs,
-                action_calibration,
-                arm=arm,
-                camera_frame=camera_frame,
-                target_position_camera_m=_round_list(target_camera),
-                duration_s=move_duration_s,
-            )
-            self._execute(action, meta["actual_duration_s"])
-            segments.append({"name": name, "action": action, "meta": meta})
-
-        def wait_segment(name: str, duration_s: float) -> None:
-            if duration_s <= 0.0:
-                return
-            time.sleep(duration_s)
-            segments.append({"name": name, "wait_s": duration_s})
-
-        execute_gripper("close_gripper")
-        execute_move("move_to_button_above_1", button_above_camera)
-        execute_move("move_down_to_button_press_1", button_camera)
-        wait_segment("hold_after_press_1", press_hold_s)
-        execute_move("lift_after_press_1", button_above_camera)
-        wait_segment("wait_between_presses", press_interval_s)
-        execute_move("move_down_to_button_press_2", button_camera)
-        wait_segment("hold_after_press_2", press_hold_s)
-        execute_move("lift_after_press_2", button_above_camera)
-
-        return {
-            "ok": True,
-            "arm": arm,
-            "button_tag_id": button_tag_id,
-            "camera_frame": camera_frame,
-            "base_offset_m": _round_list(base_offset),
-            "lift_dz_base_m": lift_dz_base_m,
-            "press_hold_s": press_hold_s,
-            "press_interval_s": press_interval_s,
-            "close_gripper_value": float(close_gripper_value),
-            "button_tag": button_tag,
-            "targets": targets,
-            "sequence": [segment["name"] for segment in segments],
-            "segments": segments,
-        }
+            return result
+        finally:
+            restore_result = self._reset_arm_then_rest_pose(reason="switch_scene_restore")
+            if "result" in locals():
+                result["switch_scene_waist_prepare"] = switch_waist_result
+                result["switch_scene_restore"] = restore_result
 
     def _observation(self):
         if self._env is None:
@@ -525,6 +568,7 @@ class RuleControlTask(PolicyTaskBase):
         failed = False
         last_error = None
         reset_result = None
+        post_policy_waist_result = None
         try:
             logger.info(f"Connecting policy skill: {policy_url}")
             ws = websocket_client.connect(
@@ -576,6 +620,19 @@ class RuleControlTask(PolicyTaskBase):
                     if self._policy_ws is ws:
                         self._policy_ws = None
 
+            if completed:
+                try:
+                    post_policy_waist_result = self._move_policy_waist_to_reset_pose(prompt)
+                except Exception as exc:
+                    post_policy_waist_result = {"executed": False, "error": str(exc)}
+                    failed = True
+                    completed = False
+                    last_error = (
+                        f"{last_error}; policy waist restore failed: {exc}"
+                        if last_error
+                        else f"policy waist restore failed: {exc}"
+                    )
+
             if completed or failed:
                 try:
                     reset_result = self._reset_robot_pose()
@@ -592,6 +649,7 @@ class RuleControlTask(PolicyTaskBase):
                 self._policy_state["completed"] = completed
                 self._policy_state["failed"] = failed
                 self._policy_state["last_error"] = last_error
+                self._policy_state["post_policy_waist_result"] = _json_safe(post_policy_waist_result)
                 self._policy_state["reset_result"] = _json_safe(reset_result)
                 self._running = False
 
@@ -607,6 +665,9 @@ class RuleControlTask(PolicyTaskBase):
         ready, reason = _policy_input_ready(payload)
         if not ready:
             raise RuntimeError(f"policy input is not ready: {reason}")
+        image_shapes = _resize_policy_input_images(payload)
+        with self._policy_lock:
+            self._policy_state["latest_input_image_shapes"] = image_shapes
         payload.prompt = prompt
         return payload
 
@@ -632,6 +693,9 @@ class RuleControlTask(PolicyTaskBase):
             "latest_action": None,
             "latest_action_chunk_index": None,
             "metadata": None,
+            "latest_input_image_shapes": None,
+            "pre_policy_waist_result": None,
+            "post_policy_waist_result": None,
             "last_error": None,
             "reset_result": None,
         }
@@ -749,6 +813,257 @@ class RuleControlTask(PolicyTaskBase):
         self._reset_on_initialize = bool(
             self.config.get("reset_on_initialize", reset_section.get("on_initialize", False))
         )
+        self._pull_waist_positions = _configured_pull_waist_positions(self.config)
+        self._push_waist_positions = _configured_push_waist_positions(self.config)
+
+    def _prepare_policy_start_pose(self, prompt: str) -> dict[str, Any] | None:
+        if _is_pull_open_drawer_prompt(prompt):
+            if self._pull_waist_positions is None:
+                return {
+                    "executed": False,
+                    "reason": "pull_waist_positions is not configured",
+                    "prompt": prompt,
+                }
+            return self._move_waist_for_policy(self._pull_waist_positions, prompt)
+
+        if _is_push_close_drawer_prompt(prompt):
+            if self._push_waist_positions is None:
+                return {
+                    "executed": False,
+                    "reason": "push_waist_positions is not configured",
+                    "prompt": prompt,
+                }
+            return self._move_waist_for_policy(self._push_waist_positions, prompt)
+
+        return None
+
+    def _move_waist_for_policy(self, target_waist_positions: list[float], prompt: str) -> dict[str, Any]:
+        result = self._move_policy_waist_with_action(target_waist_positions, reason="policy_start_pose")
+        result["prompt"] = prompt
+        return result
+
+    def _move_policy_waist_to_reset_pose(self, prompt: str) -> dict[str, Any] | None:
+        if not (_is_pull_open_drawer_prompt(prompt) or _is_push_close_drawer_prompt(prompt)):
+            return None
+        target_waist_positions = self._reset_pose.get("target_waist_positions")
+        if target_waist_positions is None:
+            return {
+                "executed": False,
+                "reason": "target_waist_positions is not configured",
+                "prompt": prompt,
+            }
+        result = self._move_policy_waist_with_action(target_waist_positions, reason="policy_finish_pose")
+        result["prompt"] = prompt
+        return result
+
+    def _move_policy_waist_with_action(self, target_waist_positions: list[float], reason: str) -> dict[str, Any]:
+        if self._env is None:
+            raise RuntimeError("G01Env is not initialized")
+
+        obs = self._observation()
+        states = _observation_states(obs)
+        current_arm = _float_list(_get(states, "arm_joint_states"), 14)
+        current_waist = _float_list(_get(states, "waist_joint_states"), 2)
+        if current_arm is None:
+            raise RuntimeError("current arm_joint_states are unavailable before policy waist move")
+        if current_waist is None:
+            raise RuntimeError("current waist_joint_states are unavailable before policy waist move")
+
+        duration_s = POLICY_WAIST_MOVE_DURATION_S
+        num_steps = max(2, int(round(duration_s * POLICY_WAIST_CONTROL_HZ)))
+        waist_rows = np.linspace(
+            np.asarray(current_waist, dtype=np.float64),
+            np.asarray(target_waist_positions, dtype=np.float64),
+            num_steps,
+        ).tolist()
+        action = Action(
+            timestamps=int(time.time() * 1e9),
+            trajectory_reference_time=duration_s,
+            base_link="base_link",
+            waist=waist_rows,
+        )
+        self._env.execute_action(action, duration_s)
+        reached, final_waist, max_abs_error = self._wait_for_waist_position(target_waist_positions)
+        if not reached:
+            raise RuntimeError(
+                "policy waist action did not reach target: "
+                f"target={target_waist_positions}, final={final_waist}, max_abs_error={max_abs_error:.6f}"
+            )
+        return {
+            "executed": True,
+            "reason": reason,
+            "current_waist_positions": current_waist,
+            "target_waist_positions": target_waist_positions,
+            "final_waist_positions": final_waist,
+            "max_abs_error": max_abs_error,
+            "duration_s": duration_s,
+            "command": "Action(waist)->execute_action",
+            "num_steps": num_steps,
+        }
+
+    def _move_waist_preserving_arm(self, target_waist_positions: list[float], reason: str) -> dict[str, Any]:
+        if self._env is None:
+            raise RuntimeError("G01Env is not initialized")
+
+        obs = self._observation()
+        states = _observation_states(obs)
+        current_arm = _float_list(_get(states, "arm_joint_states"), 14)
+        current_waist = _float_list(_get(states, "waist_joint_states"), 2)
+        if current_arm is None:
+            raise RuntimeError("current arm_joint_states are unavailable before waist move")
+        if current_waist is None:
+            raise RuntimeError("current waist_joint_states are unavailable before waist move")
+
+        duration_s = POLICY_WAIST_MOVE_DURATION_S
+        command_count = self._send_body_pose_waist_command(target_waist_positions, duration_s)
+        reached, final_waist, max_abs_error = self._wait_for_waist_position(target_waist_positions)
+        if not reached:
+            raise RuntimeError(
+                "waist move did not reach target: "
+                f"target={target_waist_positions}, final={final_waist}, max_abs_error={max_abs_error:.6f}"
+            )
+        return {
+            "executed": True,
+            "reason": reason,
+            "current_waist_positions": current_waist,
+            "target_waist_positions": target_waist_positions,
+            "final_waist_positions": final_waist,
+            "max_abs_error": max_abs_error,
+            "duration_s": duration_s,
+            "command": "move_waist",
+            "command_count": command_count,
+        }
+
+    def _send_body_pose_waist_command(self, target_waist_positions: list[float], duration_s: float) -> int:
+        from corobot.robots.g01_robot import G01Robot
+
+        robot = G01Robot().instance_robot()
+        if not hasattr(robot, "move_waist"):
+            raise RuntimeError("G01Robot instance does not expose move_waist")
+
+        target = [float(value) for value in _float_list(target_waist_positions, 2)]
+        command_count = 3
+        sleep_s = max(0.0, float(duration_s) / float(command_count))
+        for _ in range(command_count):
+            robot.move_waist(target)
+            time.sleep(sleep_s)
+        return command_count
+
+    def _wait_for_waist_position(self, target_waist_positions: list[float]) -> tuple[bool, list[float] | None, float]:
+        deadline = time.monotonic() + POLICY_WAIST_SETTLE_TIMEOUT_S
+        target = np.asarray(target_waist_positions, dtype=np.float64).reshape(2)
+        final_waist = None
+        max_abs_error = float("inf")
+        while True:
+            obs = self._observation()
+            states = _observation_states(obs)
+            final_waist = _float_list(_get(states, "waist_joint_states"), 2)
+            if final_waist is not None:
+                error = np.abs(np.asarray(final_waist, dtype=np.float64).reshape(2) - target)
+                max_abs_error = float(np.max(error))
+                if max_abs_error <= POLICY_WAIST_TOLERANCE:
+                    return True, final_waist, max_abs_error
+            if time.monotonic() >= deadline:
+                return False, final_waist, max_abs_error
+            time.sleep(0.1)
+
+    def _reset_arm_then_rest_pose(self, reason: str) -> dict[str, Any]:
+        if self._env is None:
+            raise RuntimeError("G01Env is not initialized")
+
+        init_pose = _copy_reset_pose(self._reset_pose)
+        arm_reset = None
+        rest_reset = None
+
+        target_arm_joint_positions = init_pose.get("target_arm_joint_positions")
+        if target_arm_joint_positions is not None:
+            arm_reset = {
+                "target_arm_joint_positions": target_arm_joint_positions,
+                "target_grippers_positions": None,
+                "target_head_positions": None,
+                "target_waist_positions": None,
+            }
+            self._env.reset(**arm_reset)
+
+        rest_reset = {
+            "target_grippers_positions": init_pose.get("target_grippers_positions"),
+            "target_head_positions": init_pose.get("target_head_positions"),
+            "target_waist_positions": init_pose.get("target_waist_positions"),
+        }
+        rest_result = self._reset_non_arm_pose(**rest_reset)
+
+        return {
+            "executed": True,
+            "reason": reason,
+            "arm_reset": arm_reset,
+            "rest_reset": rest_reset,
+            "rest_result": rest_result,
+        }
+
+    def _reset_non_arm_pose(
+        self,
+        target_grippers_positions: list[float] | None = None,
+        target_head_positions: list[float] | None = None,
+        target_waist_positions: list[float] | None = None,
+    ) -> dict[str, Any]:
+        if self._env is None:
+            raise RuntimeError("G01Env is not initialized")
+
+        duration_s = POLICY_WAIST_MOVE_DURATION_S
+        gripper_result = None
+        head_publish_count = None
+        waist_publish_count = None
+
+        if target_grippers_positions is not None:
+            gripper_result = self._reset_grippers_pose(target_grippers_positions)
+
+        if target_head_positions is not None:
+            head_publish_count = self._publish_wbc_head_command(target_head_positions, duration_s)
+
+        if target_waist_positions is not None:
+            waist_publish_count = self._send_body_pose_waist_command(target_waist_positions, duration_s)
+
+        waist_reached = None
+        final_waist = None
+        max_abs_error = None
+        if target_waist_positions is not None:
+            waist_reached, final_waist, max_abs_error = self._wait_for_waist_position(target_waist_positions)
+            if not waist_reached:
+                raise RuntimeError(
+                    "waist reset did not reach target after switch_scene: "
+                    f"target={target_waist_positions}, final={final_waist}, max_abs_error={max_abs_error:.6f}"
+                )
+
+        return {
+            "executed": True,
+            "duration_s": duration_s,
+            "gripper_result": gripper_result,
+            "head_command": "move_wbc_head" if target_head_positions is not None else None,
+            "head_publish_count": head_publish_count,
+            "waist_command": "move_waist" if target_waist_positions is not None else None,
+            "waist_command_count": waist_publish_count,
+            "has_grippers": target_grippers_positions is not None,
+            "has_head": target_head_positions is not None,
+            "has_waist": target_waist_positions is not None,
+            "waist_reached": waist_reached,
+            "final_waist_positions": final_waist,
+            "max_abs_error": max_abs_error,
+        }
+
+    def _publish_wbc_head_command(self, target_head_positions: list[float], duration_s: float) -> int:
+        from corobot.robots.g01_robot import G01Robot
+
+        robot = G01Robot().instance_robot()
+        if not hasattr(robot, "move_wbc_head"):
+            raise RuntimeError("G01Robot instance does not expose move_wbc_head")
+
+        target = [float(value) for value in _float_list(target_head_positions, 2)]
+        interval_s = 1.0 / POLICY_WAIST_CONTROL_HZ
+        publish_count = max(1, int(round(float(duration_s) * POLICY_WAIST_CONTROL_HZ)))
+        for _ in range(publish_count):
+            robot.move_wbc_head(target)
+            time.sleep(interval_s)
+        return publish_count
 
     def _reset_robot_pose(self) -> dict[str, Any]:
         if self._env is None:
@@ -866,6 +1181,81 @@ def _policy_input_ready(payload: Any) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _resize_policy_input_images(
+    payload: Any,
+    *,
+    height: int = POLICY_IMAGE_HEIGHT,
+    width: int = POLICY_IMAGE_WIDTH,
+) -> dict[str, Any]:
+    obs = _get(payload, "observation")
+    images = _get(obs, "images")
+    if images is None:
+        return {}
+
+    shapes: dict[str, Any] = {}
+    for camera_name in POLICY_IMAGE_CAMERAS:
+        raw_image = _get(images, camera_name)
+        image = _image_to_array(raw_image)
+        if image is None:
+            shapes[camera_name] = {"ok": False, "message": "image is unavailable"}
+            continue
+
+        original = np.asarray(image)
+        prepared = _policy_image_to_hwc_rgb_uint8(original)
+        resized = _resize_with_pad_pil(prepared, height, width)
+        _set_value(images, camera_name, resized)
+        shapes[camera_name] = {
+            "ok": True,
+            "before": [int(value) for value in original.shape],
+            "after": [int(value) for value in resized.shape],
+            "dtype": str(resized.dtype),
+        }
+    return shapes
+
+
+def _policy_image_to_hwc_rgb_uint8(image: Any) -> np.ndarray:
+    image_array = np.asarray(image)
+    if image_array.ndim == 3 and image_array.shape[0] in {1, 3, 4} and image_array.shape[-1] not in {1, 3, 4}:
+        image_array = np.transpose(image_array, (1, 2, 0))
+
+    if np.issubdtype(image_array.dtype, np.floating):
+        max_value = float(np.nanmax(image_array)) if image_array.size else 0.0
+        if max_value <= 1.0:
+            image_array = (255.0 * image_array).clip(0, 255).astype(np.uint8)
+        else:
+            image_array = np.clip(image_array, 0, 255).astype(np.uint8)
+    elif image_array.dtype != np.uint8:
+        image_array = _to_uint8_image(image_array)
+
+    image_array = _to_color_image(image_array)
+    if image_array.ndim != 3 or image_array.shape[2] != 3:
+        raise ValueError(f"policy image must be HWC RGB after conversion, got shape {image_array.shape}")
+    return np.ascontiguousarray(image_array)
+
+
+def _resize_with_pad_pil(image: np.ndarray, height: int, width: int) -> np.ndarray:
+    if image.shape[-3:-1] == (height, width):
+        return image
+
+    from PIL import Image
+
+    pil_image = Image.fromarray(image)
+    cur_width, cur_height = pil_image.size
+    if cur_width == width and cur_height == height:
+        return image
+
+    ratio = max(cur_width / width, cur_height / height)
+    resized_height = int(cur_height / ratio)
+    resized_width = int(cur_width / ratio)
+    resized_image = pil_image.resize((resized_width, resized_height), resample=Image.BILINEAR)
+
+    zero_image = Image.new(resized_image.mode, (width, height), 0)
+    pad_height = max(0, int((height - resized_height) / 2))
+    pad_width = max(0, int((width - resized_width) / 2))
+    zero_image.paste(resized_image, (pad_width, pad_height))
+    return np.asarray(zero_image, dtype=np.uint8)
+
+
 def _sequence_len(value: Any) -> int:
     if value is None:
         return 0
@@ -886,6 +1276,41 @@ def _merge_reset_pose(target: dict[str, list[float] | None], source: dict[str, A
     for source_key, target_key in RESET_CONFIG_KEY_MAP.items():
         if source_key in source:
             target[target_key] = _float_list_or_none(source[source_key])
+
+
+def _configured_pull_waist_positions(config: dict[str, Any]) -> list[float] | None:
+    return _configured_policy_waist_positions(config, ("pull_waist_positions", "pull_waist_positins"))
+
+
+def _configured_push_waist_positions(config: dict[str, Any]) -> list[float] | None:
+    return _configured_policy_waist_positions(config, ("push_waist_positions", "push_waist_positins"))
+
+
+def _configured_policy_waist_positions(config: dict[str, Any], keys: tuple[str, ...]) -> list[float] | None:
+    reset_section = config.get("reset") or {}
+    sections = (
+        config.get("policy_skill") or {},
+        config.get("reset_pose") or {},
+        reset_section.get("pose") or {},
+        reset_section,
+        config.get("model_config") or {},
+        config,
+    )
+    for section in sections:
+        for key in keys:
+            if key in section:
+                return _float_list(section[key], 2)
+    return None
+
+
+def _is_pull_open_drawer_prompt(prompt: str) -> bool:
+    normalized = " ".join(str(prompt or "").strip().lower().split())
+    return normalized == "pull open the drawer"
+
+
+def _is_push_close_drawer_prompt(prompt: str) -> bool:
+    normalized = " ".join(str(prompt or "").strip().lower().split())
+    return normalized == "push close the drawer"
 
 
 def _float_list_or_none(value: Any) -> list[float] | None:
@@ -1263,3 +1688,10 @@ def _get(obj: Any, key: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(key)
     return getattr(obj, key, None)
+
+
+def _set_value(obj: Any, key: str, value: Any) -> None:
+    if isinstance(obj, dict):
+        obj[key] = value
+    else:
+        setattr(obj, key, value)

@@ -200,6 +200,114 @@ def test_start_policy_executes_chunks_records_latest_action_and_resets(tmp_path,
     assert env.calls[-1][0] == "reset"
 
 
+def test_start_policy_pull_drawer_moves_waist_before_policy_input_and_resets(tmp_path, monkeypatch):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        """
+reset_pose:
+  target_waist_positions: [0.89, 0.33]
+  pull_waist_positions: [0.40441, 0.2598677062988281]
+""",
+        encoding="utf-8",
+    )
+    returned_action = Action(timestamps=201, trajectory_reference_time=0.01, left_effector=[[0.1]])
+    fake_ws = FakePolicyWebSocket(
+        [
+            _packed({"camera_names": ["head", "hand_left", "hand_right"]}),
+            _packed(returned_action.model_dump()),
+        ]
+    )
+    monkeypatch.setattr(
+        "corobot.policy_tasks.rule_control_task.websocket_client.connect",
+        lambda *args, **kwargs: fake_ws,
+    )
+
+    task = RuleControlTask(str(config_path))
+    task._configure_reset()
+    env = FakeEnv(
+        observation={
+            "states": {
+                "arm_joint_states": [0.01] * 14,
+                "waist_joint_states": [0.89, 0.33],
+            }
+        },
+        std_model_inputs=[_complete_policy_input()],
+    )
+    task._env = env
+
+    result = task.start_policy(prompt="Pull open the drawer", port=8999, chunk_count=1)
+    assert result["ok"] is True
+    assert result["pre_policy_waist_result"]["executed"] is True
+    assert task._policy_thread is not None
+    task._policy_thread.join(timeout=2.0)
+
+    status = task.policy_status()
+    assert status["ok"] is True
+    assert status["pre_policy_waist_result"]["executed"] is True
+    assert status["pre_policy_waist_result"]["target_waist_positions"] == pytest.approx(
+        [0.40441, 0.2598677062988281]
+    )
+    assert fake_ws.sent[0]["prompt"] == "Pull open the drawer"
+
+    assert env.calls[0][0] == "reset"
+    pre_policy_reset = env.calls[0][1]
+    assert pre_policy_reset["target_arm_joint_positions"] == pytest.approx([0.01] * 14)
+    assert pre_policy_reset["target_grippers_positions"] is None
+    assert pre_policy_reset["target_head_positions"] is None
+    assert pre_policy_reset["target_waist_positions"] == pytest.approx([0.40441, 0.2598677062988281])
+
+    assert env.calls[-1][0] == "reset"
+    final_reset = env.calls[-1][1]
+    assert final_reset["target_waist_positions"] == pytest.approx([0.89, 0.33])
+
+
+def test_start_policy_pull_drawer_prepose_runs_before_policy_metadata(tmp_path, monkeypatch):
+    config_path = tmp_path / "task.yaml"
+    config_path.write_text(
+        """
+reset_pose:
+  target_waist_positions: [0.89, 0.33]
+  pull_waist_positions: [0.40441, 0.2598677062988281]
+""",
+        encoding="utf-8",
+    )
+    fake_ws = FakePolicyWebSocket([RuntimeError("metadata unavailable")])
+    monkeypatch.setattr(
+        "corobot.policy_tasks.rule_control_task.websocket_client.connect",
+        lambda *args, **kwargs: fake_ws,
+    )
+
+    task = RuleControlTask(str(config_path))
+    task._configure_reset()
+    env = FakeEnv(
+        observation={
+            "states": {
+                "arm_joint_states": [0.01] * 14,
+                "waist_joint_states": [0.89, 0.33],
+            }
+        },
+        std_model_inputs=[_complete_policy_input()],
+    )
+    task._env = env
+
+    result = task.start_policy(prompt="Pull open the drawer", port=8999, chunk_count=1)
+    assert result["ok"] is True
+    assert result["pre_policy_waist_result"]["executed"] is True
+    assert task._policy_thread is not None
+    task._policy_thread.join(timeout=2.0)
+
+    status = task.policy_status()
+    assert status["ok"] is False
+    assert status["failed"] is True
+    assert "metadata unavailable" in status["last_error"]
+    assert status["pre_policy_waist_result"]["executed"] is True
+    assert status["pre_policy_waist_result"]["target_waist_positions"] == pytest.approx(
+        [0.40441, 0.2598677062988281]
+    )
+    assert env.calls[0][0] == "reset"
+    assert env.calls[0][1]["target_waist_positions"] == pytest.approx([0.40441, 0.2598677062988281])
+
+
 def test_start_policy_failure_marks_failed_and_resets(tmp_path, monkeypatch):
     config_path = tmp_path / "task.yaml"
     config_path.write_text("{}\n", encoding="utf-8")
@@ -380,9 +488,20 @@ def test_camera_views_saves_rgb_observation_as_correct_jpg_colors(tmp_path):
 
 def test_switch_scene_moves_above_then_presses_twice(tmp_path, monkeypatch):
     config_path = tmp_path / "task.yaml"
-    config_path.write_text("{}\n", encoding="utf-8")
+    config_path.write_text(
+        """
+reset_pose:
+  target_grippers_positions: [0.0, 0.0]
+  target_arm_joint_positions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+  target_head_positions: [0.5, 0.6]
+  target_waist_positions: [0.3, 0.4]
+""",
+        encoding="utf-8",
+    )
     observation = {
         "states": {
+            "arm_joint_states": [0.01] * 14,
+            "waist_joint_states": [0.1, 0.2],
             "end_pose": {
                 "base_link": {
                     "right_arm": {
@@ -395,6 +514,7 @@ def test_switch_scene_moves_above_then_presses_twice(tmp_path, monkeypatch):
         }
     }
     task = RuleControlTask(str(config_path))
+    task._configure_reset()
     task._calibration = CalibrationConfig.identity_for_tests()
     task._perception = FakePerception(
         [{"tag_id": 20, "position_camera_m": [0.2, 0.3, 0.4], "timestamp_s": 1.0}]
@@ -427,7 +547,26 @@ def test_switch_scene_moves_above_then_presses_twice(tmp_path, monkeypatch):
         "hold_after_press_2",
         "lift_after_press_2",
     ]
-    assert len(env.calls) == 6
+    assert len(env.calls) == 9
+    assert env.calls[0][0] == "reset"
+    assert env.calls[0][1]["target_waist_positions"] == pytest.approx([0.7201176920412174, 0.4098677062988281])
+    assert env.calls[-2][0] == "reset"
+    assert env.calls[-2][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
+    assert env.calls[-2][1]["target_grippers_positions"] is None
+    assert env.calls[-2][1]["target_head_positions"] is None
+    assert env.calls[-2][1]["target_waist_positions"] is None
+    assert env.calls[-1][0] == "reset"
+    assert env.calls[-1][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
+    assert env.calls[-1][1]["target_grippers_positions"] == pytest.approx([0.0, 0.0])
+    assert env.calls[-1][1]["target_head_positions"] == pytest.approx([0.5, 0.6])
+    assert env.calls[-1][1]["target_waist_positions"] == pytest.approx([0.3, 0.4])
+    assert result["switch_scene_waist_prepare"]["target_waist_positions"] == pytest.approx(
+        [0.7201176920412174, 0.4098677062988281]
+    )
+    assert result["switch_scene_restore"]["arm_reset"]["target_arm_joint_positions"] == pytest.approx(
+        [float(value) for value in range(1, 15)]
+    )
+    assert result["switch_scene_restore"]["rest_reset"]["target_waist_positions"] == pytest.approx([0.3, 0.4])
     move_targets = [
         segment["meta"]["target_position_camera_m"]
         for segment in result["segments"]
@@ -448,11 +587,28 @@ def test_switch_scene_moves_above_then_presses_twice(tmp_path, monkeypatch):
 
 def test_switch_scene_does_not_move_when_button_tag_missing(tmp_path):
     config_path = tmp_path / "task.yaml"
-    config_path.write_text("{}\n", encoding="utf-8")
+    config_path.write_text(
+        """
+reset_pose:
+  target_grippers_positions: [0.0, 0.0]
+  target_arm_joint_positions: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+  target_head_positions: [0.5, 0.6]
+  target_waist_positions: [0.3, 0.4]
+""",
+        encoding="utf-8",
+    )
     task = RuleControlTask(str(config_path))
+    task._configure_reset()
     task._calibration = CalibrationConfig.identity_for_tests()
     task._perception = FakePerception([{"tag_id": 21, "position_camera_m": [0.0, 0.0, 0.5]}])
-    env = FakeEnv({"states": {}})
+    env = FakeEnv(
+        {
+            "states": {
+                "arm_joint_states": [0.01] * 14,
+                "waist_joint_states": [0.1, 0.2],
+            }
+        }
+    )
     task._env = env
 
     result = task.switch_scene(button_tag_id=20)
@@ -461,4 +617,9 @@ def test_switch_scene_does_not_move_when_button_tag_missing(tmp_path):
     assert result["error_type"] == "tag_not_visible"
     assert result["missing_tag_ids"] == [20]
     assert result["visible_tag_ids"] == [21]
-    assert env.calls == []
+    assert [call[0] for call in env.calls] == ["reset", "reset", "reset"]
+    assert env.calls[0][1]["target_waist_positions"] == pytest.approx([0.7201176920412174, 0.4098677062988281])
+    assert env.calls[1][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
+    assert env.calls[1][1]["target_waist_positions"] is None
+    assert env.calls[2][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
+    assert env.calls[2][1]["target_waist_positions"] == pytest.approx([0.3, 0.4])

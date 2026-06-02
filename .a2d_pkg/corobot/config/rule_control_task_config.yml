@@ -62,7 +62,9 @@ reset_pose:
   # [head_yaw_rad, head_pitch_rad]
   target_head_positions: [0.0, 0.43633230555555524]
   # [waist_pitch_rad, waist_lift_m]
-  target_waist_positions: [0.8901176920412174, 0.3298677062988281]
+  target_waist_positions: [0.8001176920412174, 0.3598677062988281]
+  push_waist_positions: [0.5201176920412174, 0.1808677062988281]
+  pull_waist_positions: [0.40441, 0.1798677062988281]
 
 environment:
   dataloader:
@@ -87,5 +89,8 @@ environment:
     enabled: true
     execution_timeout_s: 2.0
 
+policy_skill:
+  # host: "10.42.0.30"
+  host: "127.0.0.1"
 logging:
   level: INFO

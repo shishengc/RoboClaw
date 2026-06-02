@@ -8,7 +8,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 MOVE_DURATION_S="${MOVE_DURATION_S:-2.0}"
 GRIPPER_DURATION_S="${GRIPPER_DURATION_S:-0.5}"
 PRESS_INTERVAL_S="${PRESS_INTERVAL_S:-3.0}"
-BUTTON_TAG_ID="${BUTTON_TAG_ID:-20}"
+BUTTON_TAG_ID="${BUTTON_TAG_ID:-21}"
 EXECUTE_SWITCH_SCENE="${EXECUTE_SWITCH_SCENE:-0}"
 
 usage() {
@@ -26,14 +26,14 @@ Usage:
 
 Example dry-run:
   ARM=right bash scripts/test_switch_scene_by_tag_base_offset.sh
-  ARM=right bash scripts/test_switch_scene_by_tag_base_offset.sh 20 0.00 0.00 0.00
+  ARM=right bash scripts/test_switch_scene_by_tag_base_offset.sh 21 0.00 0.00 -0.01
 
 Execute on robot:
   ARM=right PRESS_INTERVAL_S=3.0 EXECUTE_SWITCH_SCENE=1 bash scripts/test_switch_scene_by_tag_base_offset.sh \
-    21 0.00 0.00 0.01
+    19 0.00 0.00 -0.01
 
 This calls /skill/switch_scene. The skill itself:
-  1. Detects the requested button tag, default tag 20.
+  1. Detects the requested button tag, default tag 21.
   2. Closes the selected gripper.
   3. Moves above the button, presses down, lifts up.
   4. Waits PRESS_INTERVAL_S.
@@ -43,7 +43,7 @@ Environment:
   COROBOT_URL             default http://localhost:8765
   CURL_NO_PROXY           default *, passed to curl --noproxy to avoid local proxy timeouts
   ARM                     default right
-  BUTTON_TAG_ID           default 20, overridden by CLI tag_id
+  BUTTON_TAG_ID           default 21, overridden by CLI tag_id
   MOVE_DURATION_S         default 2.0
   GRIPPER_DURATION_S      default 0.5
   PRESS_INTERVAL_S        default 3.0, seconds to wait between the two presses
@@ -53,11 +53,11 @@ EOF
 
 case "$#" in
   0)
-    set -- 0.0 0.0 0.0
+    set -- 0.0 0.0 -0.01
     ;;
   1)
     BUTTON_TAG_ID="$1"
-    set -- 0.0 0.0 0.0
+    set -- 0.0 0.0 -0.01
     ;;
   3)
     ;;

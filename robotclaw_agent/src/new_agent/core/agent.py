@@ -53,6 +53,8 @@ class NewAgent:
         self._active_llm_round: dict[str, Any] | None = None
         self.last_trajectory_path: str | None = None
         self._observation_targets: set[str] = set()
+        self.current_atomic_action: dict[str, Any] | None = None
+        self.last_atomic_action: dict[str, Any] | None = None
 
         logger.info(f"[{self.agent_name}] Agent 初始化完成")
 
@@ -135,6 +137,8 @@ class NewAgent:
         if action_guidance is not None:
             self.current_action_guidance = action_guidance
         self._observation_targets.clear()
+        self.current_atomic_action = None
+        self.last_atomic_action = None
         self.memory_manager.create_task(
             task_brief=self.current_task_brief,
             action_guidance=self.current_action_guidance,
@@ -627,6 +631,7 @@ class NewAgent:
         last_result: ToolResult | None = None
 
         for attempt in range(1, attempts + 1):
+            self._begin_atomic_action(tool_name, tool_args, attempt)
             try:
                 result = await asyncio.wait_for(
                     self.tool_registry.execute(tool_name, **tool_args),
@@ -649,6 +654,7 @@ class NewAgent:
                     tool_name=tool_name,
                 )
 
+            self._finish_atomic_action(tool_name, tool_args, result, attempt)
             last_result = result
             if result.status == ToolStatus.SUCCESS:
                 return result
@@ -670,6 +676,41 @@ class NewAgent:
             raw_output="",
             tool_name=tool_name,
         )
+
+    def _begin_atomic_action(self, tool_name: str, tool_args: dict[str, Any], attempt: int) -> None:
+        self.current_atomic_action = {
+            "tool": tool_name,
+            "args": deepcopy(tool_args),
+            "attempt": int(attempt),
+            "status": "running",
+            "started_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+
+    def _finish_atomic_action(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        result: ToolResult,
+        attempt: int,
+    ) -> None:
+        finished = {
+            "tool": tool_name,
+            "args": deepcopy(tool_args),
+            "attempt": int(attempt),
+            "status": result.status.value,
+            "message": result.message,
+            "finished_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+        self.last_atomic_action = finished
+        current = self.current_atomic_action or {}
+        if current.get("tool") == tool_name and current.get("attempt") == attempt:
+            self.current_atomic_action = None
+
+    def get_action_status(self) -> dict[str, Any]:
+        return {
+            "current": deepcopy(self.current_atomic_action),
+            "last": deepcopy(self.last_atomic_action),
+        }
 
     async def _sense_environment(self, reason: str) -> ToolResult | None:
         if "SenseEnvironment" not in self.tool_registry.list_tools():
@@ -921,6 +962,101 @@ class NewAgent:
             "finish_reason": output.get("finish_reason"),
         }
 
+    def _compact_trajectory_for_save(self) -> list[dict[str, Any]]:
+        """Return the disk representation: compact rounds, full messages only on the last round."""
+        last_index = len(self.trajectory) - 1
+        return [
+            self._compact_llm_round_for_save(
+                llm_round,
+                include_input_messages=index == last_index,
+            )
+            for index, llm_round in enumerate(self.trajectory)
+        ]
+
+    def _compact_llm_round_for_save(
+        self,
+        llm_round: dict[str, Any],
+        *,
+        include_input_messages: bool,
+    ) -> dict[str, Any]:
+        input_data = llm_round.get("input") or {}
+        compact = {
+            "step": llm_round.get("step"),
+            "round": llm_round.get("round"),
+            "type": llm_round.get("type"),
+            "loop_step": llm_round.get("loop_step"),
+            "state": llm_round.get("state"),
+            "started_at": llm_round.get("started_at"),
+            "ended_at": llm_round.get("ended_at"),
+            "status": llm_round.get("status"),
+            "input_summary": {
+                "message_count": input_data.get("message_count", 0),
+                "tool_count": input_data.get("tool_count", 0),
+                "tool_names": deepcopy(input_data.get("tool_names", [])),
+            },
+            "output": self._saved_llm_output(llm_round),
+            "events": deepcopy(llm_round.get("events") or []),
+            "detail": deepcopy(llm_round.get("detail") or {}),
+        }
+        if include_input_messages:
+            compact["input"] = {
+                "messages": deepcopy(input_data.get("messages", [])),
+                "message_count": input_data.get("message_count", 0),
+                "tool_count": input_data.get("tool_count", 0),
+                "tool_names": deepcopy(input_data.get("tool_names", [])),
+            }
+        if "error" in llm_round:
+            compact["error"] = deepcopy(llm_round["error"])
+        return compact
+
+    def _saved_llm_output(self, llm_round: dict[str, Any]) -> dict[str, Any]:
+        output = deepcopy(llm_round.get("output") or {})
+        events = llm_round.get("events") or []
+        output.setdefault("content", None)
+        output.setdefault("tool_calls", [])
+        output.setdefault("finish_reason", None)
+        output.setdefault("model", None)
+        output.setdefault("usage", {})
+        output["round_info"] = {
+            "step": llm_round.get("step"),
+            "round": llm_round.get("round"),
+            "loop_step": llm_round.get("loop_step"),
+            "state": llm_round.get("state"),
+            "status": llm_round.get("status"),
+            "started_at": llm_round.get("started_at"),
+            "ended_at": llm_round.get("ended_at"),
+            "detail": deepcopy(llm_round.get("detail") or {}),
+            "batch_checkpoints": [
+                deepcopy(event)
+                for event in events
+                if event.get("type") in {
+                    "batch_checkpoint",
+                    "batch_aborted",
+                    "tool_call_deferred",
+                }
+            ],
+        }
+        if "error" in llm_round:
+            output["error"] = deepcopy(llm_round["error"])
+        return output
+
+    def _final_llm_context_for_save(self) -> dict[str, Any] | None:
+        if not self.trajectory:
+            return None
+        final_round = self.trajectory[-1]
+        input_data = final_round.get("input") or {}
+        return {
+            "round": final_round.get("round"),
+            "status": final_round.get("status"),
+            "started_at": final_round.get("started_at"),
+            "ended_at": final_round.get("ended_at"),
+            "messages": deepcopy(input_data.get("messages", [])),
+            "message_count": input_data.get("message_count", 0),
+            "tool_count": input_data.get("tool_count", 0),
+            "tool_names": deepcopy(input_data.get("tool_names", [])),
+            "output": self._saved_llm_output(final_round),
+        }
+
     def save_trajectory(self, final_response: str = "") -> str:
         """把本轮对话和执行轨迹落盘，便于调试和复盘。"""
         root = Path(__file__).resolve().parents[3]
@@ -936,12 +1072,14 @@ class NewAgent:
             "task_brief": self.current_task_brief,
             "action_guidance": self.current_action_guidance,
             "final_response": final_response,
-            "trajectory_format": "llm_rounds_v1",
-            "trajectory": self.trajectory,
-            "event_trace": self.event_trace,
-            "contexts": self.memory_manager.get_current_contexts(
-                system_prompt=self.get_current_system_prompt()
+            "trajectory_format": "llm_rounds_compact_v2",
+            "trajectory_retention_policy": (
+                "Each round stores output, usage, tool_calls, round_info, and events. "
+                "Only the final LLM round stores full input messages."
             ),
+            "trajectory": self._compact_trajectory_for_save(),
+            "final_llm_context": self._final_llm_context_for_save(),
+            "event_trace": self.event_trace,
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         self.last_trajectory_path = str(path)

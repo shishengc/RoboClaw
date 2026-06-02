@@ -146,13 +146,13 @@ MCP_CONTROL_TOOL_SCHEMAS = [
             "required": [],
             "properties": {
                 "arm": {"type": "string", "enum": ["left", "right"], "default": "right"},
-                "button_tag_id": {"type": "integer", "default": 20},
+                "button_tag_id": {"type": "integer", "default": 21},
                 "base_offset_m": {
                     "type": "array",
                     "items": {"type": "number"},
                     "minItems": 3,
                     "maxItems": 3,
-                    "default": [0.0, 0.0, 0.0],
+                    "default": [0.0, 0.0, 0.01],
                 },
                 "move_duration_s": {"type": "number", "default": 2.0},
                 "gripper_duration_s": {"type": "number", "default": 0.5},

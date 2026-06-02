@@ -104,35 +104,46 @@ computes grasp/place targets in one deterministic step.
 
 1. If the operator asks for a reset, call reset_robot first and continue only
    after it succeeds.
-2. If the operator asks to press a scene-switch button, call switch_scene with
-   the requested button_tag_id, base_offset_m, and optional press_interval_s.
-   Do not manually pass camera frame, press hold, lift height, or close-gripper
-   value; those are fixed by the skill.
-3. For pick-and-place, call prepare_tag_pick_place with source_object,
+2. If the operator asks to switch scenes / 切换场景, call switch_scene directly.
+   Use no arguments unless the operator explicitly overrides the recipe. Button
+   tag, arm, base offset, and press timing are centralized in
+   mcp_control_recipes. Do not manually pass camera frame, press hold, lift
+   height, or close-gripper value; those are fixed by the skill.
+3. If the operator asks to 将工件上料至抽屉式料仓 / load the workpiece into the
+   drawer magazine, show it as a staged workflow by calling these tools in order:
+   open_drawer_for_loading -> place_workpiece_in_drawer -> close_drawer_after_loading.
+   Do not write or modify VLA prompts; the fixed prompts "Pull open the drawer"
+   and "Push close the drawer" are owned by the tools. The default task uses
+   工件/workpiece tag 5, 抽屉式料仓/drawer_magazine tag 6, right arm, and the
+   validated offsets from scripts/test_load_unload.sh. Use load_workpiece_to_drawer
+   only when the operator explicitly wants the whole sequence hidden in one tool.
+4. For pick-and-place, call prepare_tag_pick_place with source_object,
    destination_object, and relation. Use nouns such as "轴承", "底座", "废品",
    "次品盒", and "良品盒"; do not ask the operator for tag ids. Use the returned
    grasp_targets and place_targets. Do not hand-code offsets in normal tasks;
    recipe parameters are owned by the mcp_control recipe registry and are keyed
    by object nouns, not by tag ids.
-4. If prepare_tag_pick_place reports missing tags, do not move blindly; ask the
+5. If prepare_tag_pick_place reports missing tags, do not move blindly; ask the
    operator to make the missing tag visible.
-5. Execute the grasp sequence with right arm:
+6. Execute the grasp sequence with right arm:
    open_gripper -> move_eef(approach_camera_m) -> move_eef(grasp_camera_m) ->
    close_gripper -> move_eef(lift_camera_m). Never move to lift_camera_m before
    close_gripper succeeds at grasp_camera_m.
-6. Execute the placement sequence with right arm:
+7. Execute the placement sequence with right arm:
    move_eef(place_hover_camera_m) -> move_eef(place_camera_m) ->
    open_gripper.
-7. After release, call SenseEnvironment with include_tags=true. Finalize only
-   if tool outputs show the sequence executed and fresh perception does not
-   contradict the requested tag relation.
+8. After release, require fresh perception before finalizing. In batched mode,
+   the runtime automatically runs post_batch_verification after motion batches;
+   if the latest context already contains that fresh perception result, call
+   FinalizeTask directly instead of calling SenseEnvironment again.
 
 Use reset_robot only when the user asks to reset or when a safe restart is
-needed. After FinalizeTask succeeds, the runtime will automatically call
-reset_robot; do not add an extra final reset yourself. Use SenseEnvironment after
-motion to inspect robot/tool status. If AprilTag detection is stale or missing,
-do not move blindly; ask the operator to make the tag visible unless they
-explicitly permit stale poses.
+needed. In batched mode, the runtime may automatically reset_robot immediately
+after terminal release and post_batch_verification, or after FinalizeTask if it
+has not already reset. Do not add an extra final reset yourself. Use
+SenseEnvironment after motion to inspect robot/tool status. If AprilTag
+detection is stale or missing, do not move blindly; ask the operator to make the
+tag visible unless they explicitly permit stale poses.
 """
     if extra_guidance:
         recipe += "\nOperator guidance:\n" + extra_guidance
@@ -143,6 +154,7 @@ def build_mcp_task_plan() -> list[str]:
     return [
         "understand whether the user wants reset, grasp, release, or status",
         "use switch_scene directly when the user asks to press a scene-switch button",
+        "use open_drawer_for_loading, place_workpiece_in_drawer, close_drawer_after_loading for drawer magazine loading",
         "use prepare_tag_pick_place to refresh tags and compute AprilTag motion targets",
         "execute pick and place with open_gripper, move_eef, close_gripper, move_eef, and open_gripper",
         "verify status with SenseEnvironment after motion",

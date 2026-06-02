@@ -7,6 +7,7 @@ INFER_POLICY_ARGS ?=
 COROBOT_APP_ARGS ?=
 COROBOT_POLICY_AUTO_LOOP_ARGS ?=
 COROBOT_POLICY_PROMPT_LOOP_ARGS ?=
+COROBOT_CACHE_DIR ?= $(HOME)/.cache/agibot/corobot
 ROBOCLAW_AGENT_TRACE ?= 0
 ROBOCLAW_AGENT_TRACE_DIR ?= artifacts/agent_traces
 ROBOCLAW_AGENT_TRACE_FILE ?=
@@ -61,6 +62,10 @@ run:
 run_a2d:
 	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python ${MAKEFILE_DIR}src/agent_demo/interaction_layer/cmd/olympus_img_cmd.py
 
+sync_corobot_cache:
+	mkdir -p "$(COROBOT_CACHE_DIR)"
+	cp -f "$(MAKEFILE_DIR).a2d_pkg/corobot/config/"*.yml "$(COROBOT_CACHE_DIR)/"
+
 run_gui:
 	$(PYENV) $(UV_RUN_ROOT) python ${MAKEFILE_DIR}src/agent_demo/interaction_layer/gradio_ui/gradio_ui.py
 
@@ -70,7 +75,7 @@ run_tui:
 run_tui_trace:
 	$(MAKE) run_tui ROBOCLAW_AGENT_TRACE=1
 
-run_corobot_app:
+run_corobot_app: sync_corobot_cache
 	$(LD_LIBRARY) $(PYENV) $(UV_RUN_COROBOT) python -m corobot.app.app $(COROBOT_APP_ARGS)
 
 run_corobot_policy_auto_loop:
