@@ -127,7 +127,6 @@ perception(tool_failure_recovery)
 close_gripper
 GraspAtCurrent
 PlaceHeldObject
-place_down
 ```
 
 例如 LLM 一次返回：

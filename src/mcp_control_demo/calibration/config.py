@@ -23,8 +23,6 @@ class CalibrationConfig:
     urdf_path: str | None = None
     intrinsics: dict[str, Any] | None = None
     camera_approach_axis: np.ndarray = field(default_factory=lambda: np.asarray([0.0, 0.0, -1.0]))
-    camera_lift_axis: np.ndarray = field(default_factory=lambda: np.asarray([0.0, -1.0, 0.0]))
-    camera_place_down_axis: np.ndarray = field(default_factory=lambda: np.asarray([0.0, 1.0, 0.0]))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CalibrationConfig":
@@ -53,8 +51,6 @@ class CalibrationConfig:
             urdf_path=None if urdf_path is None else str(urdf_path),
             intrinsics=source.get("intrinsics"),
             camera_approach_axis=normalize_vector(source.get("camera_approach_axis", [0.0, 0.0, -1.0])),
-            camera_lift_axis=normalize_vector(source.get("camera_lift_axis", [0.0, -1.0, 0.0])),
-            camera_place_down_axis=normalize_vector(source.get("camera_place_down_axis", [0.0, 1.0, 0.0])),
         )
 
     @classmethod

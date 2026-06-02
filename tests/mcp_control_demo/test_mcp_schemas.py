@@ -31,8 +31,6 @@ def test_expected_primitive_tools_are_present():
         "detect_tags",
         "get_apriltag_pose",
         "move_eef",
-        "lift_eef",
-        "place_down",
         "open_gripper",
         "close_gripper",
         "switch_scene",

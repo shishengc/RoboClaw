@@ -96,66 +96,6 @@ def build_move_eef_between_camera_points(
     }
 
 
-def build_lift_eef_action(
-    observation: Any,
-    calibration: CalibrationConfig,
-    *,
-    arm: str,
-    distance_m: float,
-    camera_frame: str | None = None,
-    duration_s: float | None = 1.0,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    return _build_offset_eef_action(
-        observation,
-        calibration,
-        arm=arm,
-        axis_camera=calibration.camera_lift_axis,
-        distance_m=distance_m,
-        camera_frame=camera_frame,
-        duration_s=duration_s,
-        label="lift_eef",
-    )
-
-
-def build_place_down_sequence(
-    observation: Any,
-    calibration: CalibrationConfig,
-    *,
-    arm: str,
-    down_distance_m: float,
-    camera_frame: str | None = None,
-    duration_s: float | None = 1.0,
-    open_after_down: bool = True,
-    gripper_duration_s: float | None = 0.5,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    down_action, down_meta = _build_offset_eef_action(
-        observation,
-        calibration,
-        arm=arm,
-        axis_camera=calibration.camera_place_down_axis,
-        distance_m=down_distance_m,
-        camera_frame=camera_frame,
-        duration_s=duration_s,
-        label="place_down",
-    )
-    actions = [down_action]
-    segments = [down_meta]
-    if open_after_down:
-        open_action, open_meta = build_gripper_action(
-            observation,
-            arm=arm,
-            gripper_value=OPEN_GRIPPER,
-            duration_s=gripper_duration_s,
-        )
-        actions.append(open_action)
-        segments.append(open_meta)
-    return actions, {
-        "arm": _validate_arm(arm),
-        "camera_frame": camera_frame or calibration.camera_frame,
-        "segments": segments,
-    }
-
-
 def build_gripper_action(
     observation: Any,
     *,
@@ -184,41 +124,6 @@ def build_gripper_action(
         "gripper_value": value,
         "left_target": left_target,
         "right_target": right_target,
-    }
-
-
-def _build_offset_eef_action(
-    observation: Any,
-    calibration: CalibrationConfig,
-    *,
-    arm: str,
-    axis_camera: np.ndarray,
-    distance_m: float,
-    camera_frame: str | None,
-    duration_s: float | None,
-    label: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    current_pose = _current_eef_pose(observation, arm, calibration.exec_frame)
-    current_exec = _pose_position(current_pose)
-    current_orientation = _pose_orientation(current_pose)
-    if current_exec is None or current_orientation is None:
-        raise ValueError(f"current {arm} EEF pose is unavailable in {calibration.exec_frame}")
-    current_center_exec = wrist_to_gripper_center_exec(current_exec, current_orientation)
-    start_camera = calibration.exec_to_camera_point(current_center_exec, camera_frame)
-    target_camera = start_camera + axis_camera * float(distance_m)
-    action, meta = build_move_eef_between_camera_points(
-        observation,
-        calibration,
-        arm=arm,
-        start_position_camera_m=start_camera.tolist(),
-        target_position_camera_m=target_camera.tolist(),
-        camera_frame=camera_frame,
-        duration_s=duration_s,
-    )
-    return action, meta | {
-        "primitive": label,
-        "axis_camera": _round_list(axis_camera),
-        "distance_m": float(distance_m),
     }
 
 

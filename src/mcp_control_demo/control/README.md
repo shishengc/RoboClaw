@@ -2,7 +2,7 @@
 
 控制层只接受相机坐标系目标，执行前再转换成 CoRobot `Action`。
 
-对外 `move_eef/lift_eef/place_down` 的 EEF 目标统一解释为
+对外 `move_eef` 的 EEF 目标统一解释为
 Omnipicker 夹爪中心 TCP，不是 A2D 底层的 wrist/link7 frame。底层 A2D
 controller 仍然只接收 `arm_left_link7/arm_right_link7` 的 `EEF_ABS` 轨迹；
 `mcp_control_demo` 会在下发前减去固定 TCP 偏移：

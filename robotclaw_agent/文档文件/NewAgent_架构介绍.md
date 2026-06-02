@@ -231,7 +231,6 @@ src/new_agent/tools/mcp_control_tools.py
 - `open_gripper`
 - `close_gripper`
 - `move_eef`
-- `place_down`
 - `compute_tag_grasp_targets`
 - `compute_tag_place_targets`
 - `SenseEnvironment`

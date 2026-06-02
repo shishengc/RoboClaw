@@ -88,33 +88,6 @@ MCP_CONTROL_TOOL_SCHEMAS = [
         },
     },
     {
-        "name": "lift_eef",
-        "description": "按配置的 camera_lift_axis 抬升指定 EEF，控制频率固定 30Hz。",
-        "inputSchema": {
-            "type": "object",
-            "required": ["arm", "distance_m"],
-            "properties": {
-                "arm": {"type": "string", "enum": ["left", "right"]},
-                "distance_m": {"type": "number"},
-                "duration_s": {"type": "number", "default": 1.0},
-            },
-        },
-    },
-    {
-        "name": "place_down",
-        "description": "按配置的 camera_place_down_axis 下降 EEF，并可在下降后打开夹爪。",
-        "inputSchema": {
-            "type": "object",
-            "required": ["arm", "down_distance_m"],
-            "properties": {
-                "arm": {"type": "string", "enum": ["left", "right"]},
-                "down_distance_m": {"type": "number"},
-                "duration_s": {"type": "number", "default": 1.0},
-                "open_after_down": {"type": "boolean", "default": True},
-            },
-        },
-    },
-    {
         "name": "open_gripper",
         "description": "打开指定左/右夹爪，控制频率固定 30Hz。",
         "inputSchema": {

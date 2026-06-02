@@ -23,8 +23,6 @@
 - `detect_tags`: 刷新 AprilTag 检测缓存
 - `get_apriltag_pose`: 按 `tag_id` 查询相机坐标系位姿
 - `move_eef`: 使用相机坐标系夹爪中心 TCP 目标移动左/右臂，底层仍下发 wrist/link7 轨迹
-- `lift_eef`: 沿已配置 camera-frame 抬升轴移动 EEF
-- `place_down`: 沿已配置 camera-frame 下降轴放置并可打开夹爪
 - `open_gripper`: 打开指定夹爪
 - `close_gripper`: 关闭指定夹爪
 
@@ -47,7 +45,7 @@
 3. `get_eef_pose` 可用于读取当前夹爪中心 TCP 位置并做小范围移动测试。
 4. `get_camera_views` 可用于读取三视角相机图像，供 Agent 做视觉确认。
 5. `detect_tags` 或 `get_apriltag_pose` 获取相机坐标系目标。
-6. 通过 `open_gripper`、`move_eef`、`close_gripper`、`lift_eef` 或 `place_down` 组合执行确定性 primitive。
+6. 通过 `open_gripper`、`move_eef` 或 `close_gripper` 组合执行确定性 primitive。
 7. `switch_scene` 可用于按按钮切换场景，内部固定使用 `head_camera_optical` 和默认按压参数。
 
 示例：

@@ -224,6 +224,7 @@ reset_pose:
 
     task = RuleControlTask(str(config_path))
     task._configure_reset()
+    monkeypatch.setattr(task, "_wait_for_waist_position", lambda target: (True, target, 0.0))
     env = FakeEnv(
         observation={
             "states": {
@@ -249,12 +250,11 @@ reset_pose:
     )
     assert fake_ws.sent[0]["prompt"] == "Pull open the drawer"
 
-    assert env.calls[0][0] == "reset"
-    pre_policy_reset = env.calls[0][1]
-    assert pre_policy_reset["target_arm_joint_positions"] == pytest.approx([0.01] * 14)
-    assert pre_policy_reset["target_grippers_positions"] is None
-    assert pre_policy_reset["target_head_positions"] is None
-    assert pre_policy_reset["target_waist_positions"] == pytest.approx([0.40441, 0.2598677062988281])
+    assert env.calls[0][0] == "execute_action"
+    pre_policy_action = env.calls[0][1]
+    assert pre_policy_action.waist[-1] == pytest.approx([0.40441, 0.2598677062988281])
+    assert len(pre_policy_action.waist) == 90
+    assert env.calls[0][2] == pytest.approx(3.0)
 
     assert env.calls[-1][0] == "reset"
     final_reset = env.calls[-1][1]
@@ -279,6 +279,7 @@ reset_pose:
 
     task = RuleControlTask(str(config_path))
     task._configure_reset()
+    monkeypatch.setattr(task, "_wait_for_waist_position", lambda target: (True, target, 0.0))
     env = FakeEnv(
         observation={
             "states": {
@@ -304,8 +305,9 @@ reset_pose:
     assert status["pre_policy_waist_result"]["target_waist_positions"] == pytest.approx(
         [0.40441, 0.2598677062988281]
     )
-    assert env.calls[0][0] == "reset"
-    assert env.calls[0][1]["target_waist_positions"] == pytest.approx([0.40441, 0.2598677062988281])
+    assert env.calls[0][0] == "execute_action"
+    assert env.calls[0][1].waist[-1] == pytest.approx([0.40441, 0.2598677062988281])
+    assert len(env.calls[0][1].waist) == 90
 
 
 def test_start_policy_failure_marks_failed_and_resets(tmp_path, monkeypatch):
@@ -523,6 +525,9 @@ reset_pose:
     task._env = env
     sleeps = []
     monkeypatch.setattr("corobot.policy_tasks.rule_control_task.time.sleep", lambda duration: sleeps.append(duration))
+    monkeypatch.setattr(task, "_publish_wbc_head_command", lambda target, duration: 1)
+    monkeypatch.setattr(task, "_send_body_pose_waist_command", lambda target, duration: 1)
+    monkeypatch.setattr(task, "_wait_for_waist_position", lambda target: (True, target, 0.0))
 
     result = task.switch_scene(
         arm="right",
@@ -538,7 +543,6 @@ reset_pose:
     assert result["targets"]["button_above_camera_m"] == pytest.approx([0.21, 0.28, 0.53])
     assert result["sequence"] == [
         "close_gripper",
-        "move_to_button_above_1",
         "move_down_to_button_press_1",
         "hold_after_press_1",
         "lift_after_press_1",
@@ -547,22 +551,13 @@ reset_pose:
         "hold_after_press_2",
         "lift_after_press_2",
     ]
-    assert len(env.calls) == 9
-    assert env.calls[0][0] == "reset"
-    assert env.calls[0][1]["target_waist_positions"] == pytest.approx([0.7201176920412174, 0.4098677062988281])
+    assert len(env.calls) == 7
     assert env.calls[-2][0] == "reset"
     assert env.calls[-2][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
     assert env.calls[-2][1]["target_grippers_positions"] is None
     assert env.calls[-2][1]["target_head_positions"] is None
     assert env.calls[-2][1]["target_waist_positions"] is None
-    assert env.calls[-1][0] == "reset"
-    assert env.calls[-1][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
-    assert env.calls[-1][1]["target_grippers_positions"] == pytest.approx([0.0, 0.0])
-    assert env.calls[-1][1]["target_head_positions"] == pytest.approx([0.5, 0.6])
-    assert env.calls[-1][1]["target_waist_positions"] == pytest.approx([0.3, 0.4])
-    assert result["switch_scene_waist_prepare"]["target_waist_positions"] == pytest.approx(
-        [0.7201176920412174, 0.4098677062988281]
-    )
+    assert env.calls[-1][0] == "execute_action"
     assert result["switch_scene_restore"]["arm_reset"]["target_arm_joint_positions"] == pytest.approx(
         [float(value) for value in range(1, 15)]
     )
@@ -573,7 +568,6 @@ reset_pose:
         if segment["name"].startswith(("move_", "lift_"))
     ]
     expected_targets = [
-        [0.21, 0.28, 0.53],
         [0.21, 0.28, 0.43],
         [0.21, 0.28, 0.53],
         [0.21, 0.28, 0.43],
@@ -585,7 +579,7 @@ reset_pose:
     assert sleeps == pytest.approx([0.5, 1.25, 0.5])
 
 
-def test_switch_scene_does_not_move_when_button_tag_missing(tmp_path):
+def test_switch_scene_does_not_move_when_button_tag_missing(tmp_path, monkeypatch):
     config_path = tmp_path / "task.yaml"
     config_path.write_text(
         """
@@ -610,6 +604,9 @@ reset_pose:
         }
     )
     task._env = env
+    monkeypatch.setattr(task, "_publish_wbc_head_command", lambda target, duration: 1)
+    monkeypatch.setattr(task, "_send_body_pose_waist_command", lambda target, duration: 1)
+    monkeypatch.setattr(task, "_wait_for_waist_position", lambda target: (True, target, 0.0))
 
     result = task.switch_scene(button_tag_id=20)
 
@@ -617,9 +614,6 @@ reset_pose:
     assert result["error_type"] == "tag_not_visible"
     assert result["missing_tag_ids"] == [20]
     assert result["visible_tag_ids"] == [21]
-    assert [call[0] for call in env.calls] == ["reset", "reset", "reset"]
-    assert env.calls[0][1]["target_waist_positions"] == pytest.approx([0.7201176920412174, 0.4098677062988281])
-    assert env.calls[1][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
-    assert env.calls[1][1]["target_waist_positions"] is None
-    assert env.calls[2][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
-    assert env.calls[2][1]["target_waist_positions"] == pytest.approx([0.3, 0.4])
+    assert [call[0] for call in env.calls] == ["reset", "execute_action"]
+    assert env.calls[0][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
+    assert env.calls[0][1]["target_waist_positions"] is None

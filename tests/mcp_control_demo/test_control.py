@@ -11,7 +11,6 @@ from mcp_control_demo.control import (
     CONTROL_HZ,
     GRIPPER_CENTER_OFFSET_LINK7_M,
     build_gripper_action,
-    build_lift_eef_action,
     build_move_eef_action,
 )
 from mcp_control_demo.control.joint_units import normalize_head_joint_states_rad
@@ -153,18 +152,6 @@ def test_radian_head_joint_observation_is_left_unchanged():
     assert normalize_head_joint_states_rad([0.1, 0.43633230555555524]) == pytest.approx(
         [0.1, 0.43633230555555524]
     )
-
-
-def test_lift_eef_uses_camera_lift_axis():
-    action, meta = build_lift_eef_action(
-        _obs(),
-        CalibrationConfig.identity_for_tests(),
-        arm="right",
-        distance_m=0.1,
-        duration_s=1.0 / 30.0,
-    )
-    assert action["right_arm"]["values"][-1][:3] == pytest.approx([0.4, 0.4, 0.6])
-    assert meta["axis_camera"] == [0.0, -1.0, 0.0]
 
 
 def test_gripper_action_is_30hz_and_sets_both_effector_fields():

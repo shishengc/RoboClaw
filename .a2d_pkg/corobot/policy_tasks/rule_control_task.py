@@ -23,9 +23,7 @@ from mcp_control_demo.calibration import CalibrationConfig
 from mcp_control_demo.control import (
     GRIPPER_CENTER_OFFSET_LINK7_M,
     build_gripper_action,
-    build_lift_eef_action,
     build_move_eef_action,
-    build_place_down_sequence,
     wrist_to_gripper_center_exec,
 )
 from mcp_control_demo.control.joint_units import normalize_head_joint_states_rad
@@ -67,7 +65,6 @@ RESET_CONFIG_KEY_MAP = {
 
 _FK_SOLVER = None
 DEFAULT_CAMERA_FRAME = "head_camera_optical"
-SWITCH_SCENE_WAIST_POSITIONS = [0.8001176920412174, 0.3898677062988281]
 POLICY_WAIST_MOVE_DURATION_S = 3.0
 POLICY_WAIST_CONTROL_HZ = 30.0
 POLICY_WAIST_SETTLE_TIMEOUT_S = 2.0
@@ -361,50 +358,6 @@ class RuleControlTask(PolicyTaskBase):
         self._execute(action, meta["actual_duration_s"])
         return {"action": action, "meta": meta}
 
-    @expose_api(method="POST", path="/skill/lift_eef")
-    def lift_eef(
-        self,
-        arm: str,
-        distance_m: float,
-        duration_s: float = 1.0,
-    ) -> dict[str, Any]:
-        obs = self._observation()
-        calibration = self._calibration_for_observation(obs)
-        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
-        action, meta = build_lift_eef_action(
-            obs,
-            calibration,
-            arm=arm,
-            camera_frame=camera_frame,
-            distance_m=distance_m,
-            duration_s=duration_s,
-        )
-        self._execute(action, meta["actual_duration_s"])
-        return {"action": action, "meta": meta}
-
-    @expose_api(method="POST", path="/skill/place_down")
-    def place_down(
-        self,
-        arm: str,
-        down_distance_m: float,
-        duration_s: float = 1.0,
-        open_after_down: bool = True,
-    ) -> dict[str, Any]:
-        obs = self._observation()
-        calibration = self._calibration_for_observation(obs)
-        camera_frame = calibration.camera_frame or DEFAULT_CAMERA_FRAME
-        actions, meta = build_place_down_sequence(
-            obs,
-            calibration,
-            arm=arm,
-            camera_frame=camera_frame,
-            down_distance_m=down_distance_m,
-            duration_s=duration_s,
-            open_after_down=open_after_down,
-        )
-        self._execute_sequence(actions)
-        return {"actions": actions, "meta": meta}
-
     @expose_api(method="POST", path="/skill/gripper")
     def gripper(
         self,
@@ -434,10 +387,6 @@ class RuleControlTask(PolicyTaskBase):
         press_hold_s = 0.5
         close_gripper_value = 1.0
 
-        switch_waist_result = self._move_waist_preserving_arm(
-            SWITCH_SCENE_WAIST_POSITIONS,
-            reason="switch_scene_prepare",
-        )
         restore_result = None
         result: dict[str, Any]
         try:
@@ -517,7 +466,6 @@ class RuleControlTask(PolicyTaskBase):
                 segments.append({"name": name, "wait_s": duration_s})
 
             execute_gripper("close_gripper")
-            execute_move("move_to_button_above_1", button_above_camera)
             execute_move("move_down_to_button_press_1", button_camera)
             wait_segment("hold_after_press_1", press_hold_s)
             execute_move("lift_after_press_1", button_above_camera)
@@ -545,7 +493,6 @@ class RuleControlTask(PolicyTaskBase):
         finally:
             restore_result = self._reset_arm_then_rest_pose(reason="switch_scene_restore")
             if "result" in locals():
-                result["switch_scene_waist_prepare"] = switch_waist_result
                 result["switch_scene_restore"] = restore_result
 
     def _observation(self):

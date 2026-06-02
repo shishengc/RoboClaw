@@ -140,7 +140,7 @@ PYTHONPATH=src python3 -m new_agent.tui \
 当前 mcp_control 工具会暴露给 LLM，包括 `reset_robot`、
 `detect_tags`、`get_apriltag_pose`、`resolve_tag_pick_place_recipe`、
 `compute_tag_grasp_targets`、`open_gripper`、`move_eef`、
-`close_gripper`、`place_down`、`compute_tag_place_targets`、
+`close_gripper`、`compute_tag_place_targets`、
 `SenseEnvironment`、`FinalizeTask`。
 
 相关代码入口：

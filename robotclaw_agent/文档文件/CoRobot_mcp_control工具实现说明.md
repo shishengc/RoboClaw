@@ -8,7 +8,6 @@
 - `detect_tags`
 - `get_apriltag_pose`
 - `move_eef`
-- `place_down`
 - `open_gripper`
 - `close_gripper`
 
@@ -20,7 +19,6 @@
 | `detect_tags` | 从当前 CoRobot observation 里读取配置相机的图像和内参，运行 AprilTag 检测，返回当前画面中所有可见 tag 的相机坐标系位姿，并刷新内部 tag cache。 |
 | `get_apriltag_pose` | 根据 `tag_id` 读取某一个 AprilTag 的最近位姿。优先查 cache；如果 cache 不存在或过期，会重新获取 observation 并运行一次 `detect_tags`。 |
 | `move_eef` | 将指定机械臂的夹爪中心 TCP 移动到给定的 camera-frame 三维目标点。内部会根据当前机器人状态计算相机到执行坐标系的变换，再生成 wrist/link7 的 30Hz EEF_ABS 轨迹并执行。 |
-| `place_down` | 让指定机械臂沿配置的 `camera_place_down_axis` 下放一段距离，并可选在下放后打开夹爪。它是“相对当前位置下放 + 可选释放”的复合 primitive。 |
 | `open_gripper` | 打开指定夹爪。Agent 侧会把它转换成 `/skill/gripper` 请求，并自动注入 `gripper_value=0.0`。 |
 | `close_gripper` | 闭合指定夹爪。Agent 侧会把它转换成 `/skill/gripper` 请求，并自动注入 `gripper_value=1.0`；在 pick-place recipe 流程里还会做抓取顺序检查。 |
 
@@ -76,8 +74,6 @@ SKILL_TOOL_ENDPOINTS = {
     "detect_tags": ("POST", "/skill/detect_tags"),
     "get_apriltag_pose": ("POST", "/skill/get_tag_pose"),
     "move_eef": ("POST", "/skill/move_eef"),
-    "lift_eef": ("POST", "/skill/lift_eef"),
-    "place_down": ("POST", "/skill/place_down"),
     "open_gripper": ("POST", "/skill/gripper"),
     "close_gripper": ("POST", "/skill/gripper"),
 }
@@ -705,92 +701,6 @@ actual_duration_s = num_steps / 30
 
 注意：这个返回里可能包含完整轨迹数组，比较长。对 LLM 下一轮决策不一定都有必要。
 
-## 9. place_down
-
-功能描述：基于当前夹爪中心位置做相对下放。它不是“放到某个 tag 上”的全流程工具；目标 tag 的放置点需要先由 `prepare_tag_pick_place` 或 `compute_tag_place_targets` 算好，然后用 `move_eef(place_hover_camera_m)` 和 `move_eef(place_camera_m)` 到位。`place_down` 更适合简单地沿配置方向下压/下放并释放。
-
-### 9.1 Agent 工具
-
-工具名：
-
-```text
-place_down
-```
-
-HTTP：
-
-```text
-POST /skill/place_down
-```
-
-典型请求：
-
-```json
-{
-  "arm": "right",
-  "down_distance_m": 0.08,
-  "duration_s": 1.0,
-  "open_after_down": true
-}
-```
-
-### 9.2 CoRobot 实现入口
-
-```python
-@expose_api(method="POST", path="/skill/place_down")
-def place_down(
-    self,
-    arm: str,
-    down_distance_m: float,
-    duration_s: float = 1.0,
-    open_after_down: bool = True,
-) -> dict[str, Any]:
-    obs = self._observation()
-    calibration = self._calibration_for_observation(obs)
-    actions, meta = build_place_down_sequence(...)
-    self._execute_sequence(actions)
-    return {"actions": actions, "meta": meta}
-```
-
-### 9.3 内部步骤
-
-调用链：
-
-```text
-place_down()
--> _observation()
--> _calibration_for_observation(obs)
--> build_place_down_sequence(...)
-   -> _build_offset_eef_action(...)
-      -> 沿 calibration.camera_place_down_axis 移动 down_distance_m
-      -> build_move_eef_between_camera_points(...)
-   -> 如果 open_after_down=True:
-      -> build_gripper_action(... gripper_value=OPEN_GRIPPER)
--> _execute_sequence(actions)
-   -> 对每个 action 依次 self._env.execute_action(...)
-```
-
-`camera_place_down_axis` 默认来自 calibration 配置，代码默认值是：
-
-```text
-[0.0, 1.0, 0.0]
-```
-
-所以 `place_down` 不是直接按 base_link 的 z 轴下放，而是沿配置定义的 camera-frame 下放方向移动。
-
-### 9.4 和 move_eef 的关系
-
-`place_down` 本质上是一个小复合 primitive：
-
-```text
-move_eef offset down
-+ optional open_gripper
-```
-
-它内部也会生成 EEF_ABS action，并通过 `G01Env.execute_action()` 执行。
-
-如果 `open_after_down=True`，会多执行一个夹爪 action。
-
 ## 10. open_gripper
 
 功能描述：打开指定机械臂夹爪。它只控制夹爪开合，不移动机械臂，也不检查夹爪里是否有物体。为了保持另一个夹爪不变，CoRobot 会从当前 observation 里读取当前左右夹爪状态。
@@ -971,7 +881,6 @@ CoRobot 本身只负责按 `gripper_value` 执行夹爪动作。
 | `detect_tags` | `G01Env.get_observation()`、图像读取、AprilTag 检测 |
 | `get_apriltag_pose` | cache 命中时很快；未命中或 stale 时会额外跑一次 `detect_tags` |
 | `move_eef` | observation、动态 FK、轨迹生成、`G01Env.execute_action()` 等待动作执行完成 |
-| `place_down` | 一个下放动作；如果 `open_after_down=True`，再加一个夹爪动作 |
 | `open_gripper` | 夹爪 action 的实际执行时间，默认约 0.5s |
 | `close_gripper` | 夹爪 action 的实际执行时间，默认约 0.5s |
 
@@ -1248,26 +1157,6 @@ det.pose_R  # tag 在相机坐标系下的旋转矩阵
 | `meta.requested_duration_s` | 请求的 `duration_s`。 |
 | `meta.actual_duration_s` | 按 30Hz 对齐后的实际执行时长。 |
 
-### 15.5 place_down
-
-输入：
-
-| 变量 | 含义 |
-|---|---|
-| `arm` | `"left"` 或 `"right"`。 |
-| `down_distance_m` | 沿 `camera_place_down_axis` 移动的距离，单位米。 |
-| `duration_s` | 下放动作时长。 |
-| `open_after_down` | 下放后是否自动打开夹爪，默认 `true`。 |
-
-输出：
-
-| 变量 | 含义 |
-|---|---|
-| `actions` | 一个或两个 action。第一个是下放 EEF_ABS action；如果 `open_after_down=true`，第二个是 gripper open action。 |
-| `meta.arm` | 控制的 arm。 |
-| `meta.camera_frame` | 使用的 camera frame。 |
-| `meta.segments` | 每段 action 的 meta。第一段通常带 `primitive=place_down`、`axis_camera`、`distance_m`；第二段是打开夹爪 meta。 |
-
 ### 15.6 open_gripper
 
 输入：
@@ -1318,7 +1207,6 @@ det.pose_R  # tag 在相机坐标系下的旋转矩阵
 | `detect_tags` | 是 | 需要 tag 出现在配置相机画面里 | 不需要机械臂末端位姿 | 相机图像缺失返回 `ok=false`；内参缺失会导致 pose 估计错误；tag 不在画面里时通常 `ok=true, detections=[]`。 |
 | `get_apriltag_pose` | cache 命中时不需要；cache miss/stale 时需要 | 需要目标 `tag_id` 可见，除非 `allow_stale=true` | 不需要机械臂末端位姿 | 未见过 tag 返回 `tag_id X not found`；过期返回 `tag_id X is stale`；刷新后仍不可见则失败。 |
 | `move_eef` | 是 | 不需要。它只相信输入的 `target_position_camera_m` | 需要 head/waist 状态计算动态 `T_exec_camera`；最好有当前 EEF pose/orientation | head/waist 缺失会导致动态标定失败；当前 EEF pose 缺失时实现可能退化为从目标点开始规划，动作不可靠，应先 `get_eef_pose`/`reset_robot`/检查 observation。 |
-| `place_down` | 是 | 不需要 | 需要当前 EEF pose/orientation 和 head/waist 状态；若自动打开夹爪，还要当前 gripper state | 当前 EEF pose 缺失会直接报 `current arm EEF pose is unavailable`；动态标定缺失也会失败。 |
 | `open_gripper` | 是 | 不需要 | 需要当前 gripper state 来保持另一侧夹爪不变 | 如果 gripper state 缺失，代码默认按 open 值作为当前值继续构造 action；这能执行，但无法精确保持未知侧状态。 |
 | `close_gripper` | 是 | 不需要；但 Agent recipe 检查需要知道之前是否到达 `grasp_camera_m` | 需要当前 gripper state 来保持另一侧夹爪不变 | gripper state 缺失时默认当前值为 open；recipe 顺序不满足时 Agent 会拒绝闭爪。 |
 
@@ -1332,7 +1220,7 @@ det.pose_R  # tag 在相机坐标系下的旋转矩阵
 detect_tags / get_apriltag_pose:
   只关心可见 AprilTag。
 
-move_eef / place_down / gripper:
+move_eef / gripper:
   不识别物体，只执行输入的几何目标或夹爪目标。
 
 reset_robot:
@@ -1346,7 +1234,6 @@ reset_robot:
 动作类工具需要程度不同：
 
 - `move_eef` 需要当前机器人 observation 来计算动态相机外参，并尽量从当前 EEF pose 规划到目标点。
-- `place_down` 更依赖当前 EEF pose，因为它是相对当前位置下放。
 - `open_gripper` / `close_gripper` 需要当前 gripper state 来让未指定的另一侧夹爪保持原状态。
 - `reset_robot` 不需要先知道当前 arm pose，它直接走 reset。
 
@@ -1435,7 +1322,6 @@ reset_robot:
 
    处理：
 
-   - `place_down` 会直接失败，因为它必须知道当前位置才能相对下放。
    - `move_eef` 的实现有退化路径，但不建议依赖；更安全的是先检查 `get_eef_pose` 或 reset。
 
 7. gripper state 缺失。

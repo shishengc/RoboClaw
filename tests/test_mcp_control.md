@@ -58,8 +58,6 @@ mcp_control:
   extrinsics:
     T_head_pitch_camera: [...]
   camera_approach_axis: [0.0, 0.0, -1.0]
-  camera_lift_axis: [0.0, -1.0, 0.0]
-  camera_place_down_axis: [0.0, 1.0, 0.0]
 ```
 
 不再使用 `src/mcp_control_demo/config`，不再使用 `calibration_path`，也不再在配置里保存预合成的 `T_exec_camera`。
@@ -229,28 +227,6 @@ curl -sS -X POST "${COROBOT_URL}/skill/move_eef" \
 
 ```bash
 ARM=right DURATION_S=1.0 bash scripts/test_move_eef.sh 0.30 0.02 0.55
-```
-
-沿相机 lift 方向抬升当前 EEF：
-
-```bash
-curl -sS -X POST "${COROBOT_URL}/skill/lift_eef" \
-  -H "Content-Type: application/json" \
-  -d '{"arm": "right", "distance_m": 0.02, "duration_s": 1.0}' \
-  | python3 -m json.tool
-```
-
-放下并可选打开夹爪：
-
-```bash
-curl -sS -X POST "${COROBOT_URL}/skill/place_down" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "arm": "right",
-    "down_distance_m": 0.02,
-    "duration_s": 1.0,
-    "open_after_down": true
-  }' | python3 -m json.tool
 ```
 
 切换场景按钮。`switch_scene` 会检测按钮 tag，闭合夹爪，先移动到按钮上方，再向下按压、抬起、等待 `press_interval_s`、再次按压并抬起：

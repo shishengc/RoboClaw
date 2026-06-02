@@ -613,8 +613,6 @@ DEMO_HTML = r"""<!doctype html>
       compute_tag_grasp_targets: {name: '计算抓取目标', phase: '几何推演'},
       compute_tag_place_targets: {name: '计算放置目标', phase: '几何推演'},
       move_eef: {name: '末端空间移动', phase: '运动执行'},
-      lift_eef: {name: '末端垂直抬升', phase: '运动执行'},
-      place_down: {name: '末端下降放置', phase: '运动执行'},
       open_gripper: {name: '张开夹爪', phase: '夹爪控制'},
       close_gripper: {name: '闭合夹爪', phase: '夹爪控制'},
       switch_scene: {name: '按压场景按钮', phase: '场景切换'},

@@ -30,8 +30,6 @@ SKILL_TOOL_ENDPOINTS = {
     "detect_tags": ("POST", "/skill/detect_tags"),
     "get_apriltag_pose": ("POST", "/skill/get_tag_pose"),
     "move_eef": ("POST", "/skill/move_eef"),
-    "lift_eef": ("POST", "/skill/lift_eef"),
-    "place_down": ("POST", "/skill/place_down"),
     "open_gripper": ("POST", "/skill/gripper"),
     "close_gripper": ("POST", "/skill/gripper"),
     "switch_scene": ("POST", "/skill/switch_scene"),
@@ -257,33 +255,6 @@ def _mcp_control_tools() -> list[types.Tool]:
                     },
                     "duration_s": {"type": "number", "default": 1.0},
                     "gripper_value": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                },
-            },
-        ),
-        types.Tool(
-            name="lift_eef",
-            description="按配置的 camera_lift_axis 抬升指定 EEF，控制频率固定 30Hz。",
-            inputSchema={
-                "type": "object",
-                "required": ["arm", "distance_m"],
-                "properties": {
-                    "arm": {"type": "string", "enum": ["left", "right"]},
-                    "distance_m": {"type": "number"},
-                    "duration_s": {"type": "number", "default": 1.0},
-                },
-            },
-        ),
-        types.Tool(
-            name="place_down",
-            description="按配置的 camera_place_down_axis 下降 EEF，并可在下降后打开夹爪。",
-            inputSchema={
-                "type": "object",
-                "required": ["arm", "down_distance_m"],
-                "properties": {
-                    "arm": {"type": "string", "enum": ["left", "right"]},
-                    "down_distance_m": {"type": "number"},
-                    "duration_s": {"type": "number", "default": 1.0},
-                    "open_after_down": {"type": "boolean", "default": True},
                 },
             },
         ),

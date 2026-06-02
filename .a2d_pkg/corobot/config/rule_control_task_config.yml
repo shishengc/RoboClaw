@@ -46,8 +46,6 @@ mcp_control:
       - [0.0, 0.0, 0.0, 1.0]
 
   camera_approach_axis: [0.0, 0.0, -1.0]
-  camera_lift_axis: [0.0, -1.0, 0.0]
-  camera_place_down_axis: [0.0, 1.0, 0.0]
 
 perception:
   camera_name: head
@@ -63,7 +61,7 @@ reset_pose:
   target_head_positions: [0.0, 0.43633230555555524]
   # [waist_pitch_rad, waist_lift_m]
   target_waist_positions: [0.8001176920412174, 0.3598677062988281]
-  push_waist_positions: [0.5201176920412174, 0.1808677062988281]
+  push_waist_positions: [0.5201176920412174, 0.1908677062988281]
   pull_waist_positions: [0.40441, 0.1798677062988281]
 
 environment:
