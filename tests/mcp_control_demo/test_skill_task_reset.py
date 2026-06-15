@@ -543,6 +543,7 @@ reset_pose:
     assert result["targets"]["button_above_camera_m"] == pytest.approx([0.21, 0.28, 0.53])
     assert result["sequence"] == [
         "close_gripper",
+        "move_to_button_above_1",
         "move_down_to_button_press_1",
         "hold_after_press_1",
         "lift_after_press_1",
@@ -551,7 +552,7 @@ reset_pose:
         "hold_after_press_2",
         "lift_after_press_2",
     ]
-    assert len(env.calls) == 7
+    assert len(env.calls) == 8
     assert env.calls[-2][0] == "reset"
     assert env.calls[-2][1]["target_arm_joint_positions"] == pytest.approx([float(value) for value in range(1, 15)])
     assert env.calls[-2][1]["target_grippers_positions"] is None
@@ -568,6 +569,7 @@ reset_pose:
         if segment["name"].startswith(("move_", "lift_"))
     ]
     expected_targets = [
+        [0.21, 0.28, 0.53],
         [0.21, 0.28, 0.43],
         [0.21, 0.28, 0.53],
         [0.21, 0.28, 0.43],

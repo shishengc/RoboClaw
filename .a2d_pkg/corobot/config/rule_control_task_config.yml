@@ -55,13 +55,22 @@ perception:
   stale_after_s: 1.0
 
 reset_on_initialize: true
+reset_posef:
+  target_grippers_positions: [0.0, 0.0]
+  # [head_yaw_rad, head_pitch_rad]
+  target_head_positions: [0.0, 0.43633230555555524]
+  # [waist_pitch_rad, waist_lift_m]
+  target_waist_positions: [0.8001176920412174, 0.3598677062988281]
+  push_waist_positions: [0.5201176920412174, 0.1808677062988281]
+  pull_waist_positions: [0.40441, 0.1798677062988281]
+
 reset_pose:
   target_grippers_positions: [0.0, 0.0]
   # [head_yaw_rad, head_pitch_rad]
   target_head_positions: [0.0, 0.43633230555555524]
   # [waist_pitch_rad, waist_lift_m]
   target_waist_positions: [0.8001176920412174, 0.3598677062988281]
-  push_waist_positions: [0.5201176920412174, 0.1908677062988281]
+  push_waist_positions: [0.5201176920412174, 0.1808677062988281]
   pull_waist_positions: [0.40441, 0.1798677062988281]
 
 environment:
@@ -88,7 +97,7 @@ environment:
     execution_timeout_s: 2.0
 
 policy_skill:
-  # host: "10.42.0.30"
-  host: "127.0.0.1"
+  host: "10.42.0.31"
+  # host: "127.0.0.1"
 logging:
   level: INFO

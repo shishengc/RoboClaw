@@ -52,7 +52,7 @@ curl -sS -X POST http://localhost:8765/skill/start_policy \
   -d '{
     "prompt": "Pull open the drawer",
     "port": 8998,
-    "chunk_count": 20
+    "chunk_count": 25
   }' | python3 -m json.tool
   
 curl -sS -X POST http://localhost:8765/skill/start_policy \
@@ -60,7 +60,7 @@ curl -sS -X POST http://localhost:8765/skill/start_policy \
   -d '{
     "prompt": "Push close the drawer",
     "port": 8999,
-    "chunk_count": 20
+    "chunk_count": 25
   }' | python3 -m json.tool
 
 This script runs a four-stage load/unload flow:

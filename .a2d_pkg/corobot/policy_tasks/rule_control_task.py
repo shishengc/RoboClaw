@@ -466,6 +466,7 @@ class RuleControlTask(PolicyTaskBase):
                 segments.append({"name": name, "wait_s": duration_s})
 
             execute_gripper("close_gripper")
+            execute_move("move_to_button_above_1", button_above_camera)
             execute_move("move_down_to_button_press_1", button_camera)
             wait_segment("hold_after_press_1", press_hold_s)
             execute_move("lift_after_press_1", button_above_camera)

@@ -88,7 +88,7 @@ OBJECT_TAG_BINDINGS: dict[str, ObjectTagBinding] = {
     "base": ObjectTagBinding(
         canonical_name="base",
         display_name="底座",
-        tag_id=0,
+        tag_id=9,
         aliases=("底座", "base"),
     ),
     "waste": ObjectTagBinding(
