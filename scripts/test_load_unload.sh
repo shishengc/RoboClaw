@@ -22,8 +22,8 @@ PULL_PROMPT="${PULL_PROMPT:-Pull open the drawer}"
 PUSH_PROMPT="${PUSH_PROMPT:-Push close the drawer}"
 PULL_POLICY_PORT="${PULL_POLICY_PORT:-8998}"
 PUSH_POLICY_PORT="${PUSH_POLICY_PORT:-8999}"
-PULL_CHUNK_COUNT="${PULL_CHUNK_COUNT:-20}"
-PUSH_CHUNK_COUNT="${PUSH_CHUNK_COUNT:-30}"
+PULL_CHUNK_COUNT="${PULL_CHUNK_COUNT:-25}"
+PUSH_CHUNK_COUNT="${PUSH_CHUNK_COUNT:-25}"
 POLICY_POLL_INTERVAL_S="${POLICY_POLL_INTERVAL_S:-1.0}"
 POLICY_TIMEOUT_S="${POLICY_TIMEOUT_S:-300}"
 EXPECT_PULL_PREPOSE="${EXPECT_PULL_PREPOSE:-1}"
@@ -91,8 +91,8 @@ Environment:
   PUSH_PROMPT             default "Push close the drawer"
   PULL_POLICY_PORT        default 8998
   PUSH_POLICY_PORT        default 8999
-  PULL_CHUNK_COUNT        default 20
-  PUSH_CHUNK_COUNT        default 30
+  PULL_CHUNK_COUNT        default 25
+  PUSH_CHUNK_COUNT        default 25
   POLICY_TIMEOUT_S        default 300
   POLICY_POLL_INTERVAL_S  default 1.0
   EXPECT_PULL_PREPOSE     default 1; verify Pull open drawer triggered pre-policy waist pose
